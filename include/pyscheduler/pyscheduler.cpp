@@ -1,4 +1,4 @@
-#include "lib/python_manager.hpp"
+#include "pyscheduler/pyscheduler.hpp"
 #include <chrono>
 
 namespace pyscheduler {

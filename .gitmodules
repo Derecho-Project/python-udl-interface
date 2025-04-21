@@ -1,0 +1,9 @@
+[submodule "lib/concurrentqueue"]
+	path = lib/concurrentqueue
+	url = https://github.com/cameron314/concurrentqueue.git
+[submodule "lib/dlpack"]
+	path = lib/dlpack
+	url = https://github.com/dmlc/dlpack.git
+[submodule "lib/pybind11"]
+	path = lib/pybind11
+	url = https://github.com/pybind/pybind11.git

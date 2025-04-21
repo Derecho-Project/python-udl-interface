@@ -1,8 +1,8 @@
 #pragma once
-
-#include "lib/blocking_concurrent_queue.hpp"
+#include "pyscheduler/library_export.hpp"
 
 #include <atomic>
+#include <blockingconcurrentqueue.h>
 #include <chrono>
 #include <filesystem>
 #include <future>
@@ -35,13 +35,13 @@ namespace pyscheduler {
 /// Since only one Python Interpreter is allowed per program, PyManager provides a
 /// mechanism to load Python modules and enqueue function calls. It also manages
 /// a thread pool to asynchronously invoke Python functions; optimizing GIL usage.
-class PyManager {
+class PYSCHEDULER_LIBRARY_EXPORT PyManager {
 public:
 	/// @brief Handles the invocation of a predefined python function from a loaded module
 	///
 	/// The InvokeHandler class is tightly coupled with PyManager so that tht lifetime of
 	/// InvokeHandlers is tied to that of the PyManager, preventing undefined behavior.
-	class InvokeHandler {
+	class PYSCHEDULER_LIBRARY_EXPORT InvokeHandler {
 		friend PyManager;
 
 	public:
@@ -183,7 +183,7 @@ public:
 								  const std::string& entry_point = "invoke");
 
 private:
-	struct __attribute__((visibility("hidden"))) SharedState {
+	struct PYSCHEDULER_LIBRARY_LOCAL SharedState {
 		std::atomic<uint64_t> arc = 0;
 
 		std::shared_mutex py_mutex;

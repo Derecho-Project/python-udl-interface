@@ -7,6 +7,3 @@ __pycache__
 # compilation results
 build
 build-*
-
-# external libraries
-dlpack
