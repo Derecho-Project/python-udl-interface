@@ -1,6 +1,6 @@
 #pragma once
 
-#include "lib/blocking_concurrent_queue.hpp"
+#include "blockingconcurrentqueue.h"
 
 #include <atomic>
 #include <chrono>
