@@ -1,0 +1,12 @@
+.vscode
+
+# python
+.env
+__pycache__
+
+# compilation results
+build
+build-*
+
+# external libraries
+dlpack
