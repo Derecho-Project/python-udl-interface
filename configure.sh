@@ -43,9 +43,8 @@ echo "  Build examples : $BUILD_EXAMPLES"
 
 # Create build directory
 mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
 
 # Run CMake configuration
-cmake .. -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DBUILD_EXAMPLES="$BUILD_EXAMPLES"
+cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DBUILD_EXAMPLES="$BUILD_EXAMPLES" -S .
 
 echo "Configuration complete. You can now run: cmake --build $BUILD_DIR"
