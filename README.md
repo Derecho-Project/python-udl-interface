@@ -25,7 +25,7 @@ Optimized as an execution engine for Machine Learning pipelines.
 - **Thread Safe Implementation** 
   Ensures only one Python interpreter is ever initialized per process for pre python3.13. 
     - [x] Pre Python 3.13 
-    - [ ] Python 3.13+ no-gil sub interpretor 
+    - [ ] Python 3.13+ no-gil sub interpreter 
 - **Thread‑Pooled Execution**  
   Uses a high‑performance round robin queue to minimize latency during high throughput workloads
 - **Optimized GIL Management**  
@@ -47,6 +47,8 @@ Package Dependencies
 - [moodycamel::BlockingConcurrentQueue](https://github.com/cameron314/concurrentqueue)  
 - [dmlc::dlpack](https://github.com/dmlc/dlpack.git)
 
+Can be installed ob Ubuntu using `sudo apt install pybind11-dev libconcurrentqueue-dev libdlpack-dev`
+
 ## Installation
 1. Initialize submodules `git submodule update --init --recursive`
 2. We provide a simple `configure.sh` script to invoke CMake configuration. Use the `-h | --help` flag to see the possible options.
@@ -54,4 +56,5 @@ Package Dependencies
 # Configure a Release build, including examples
 ./configure.sh -t Release -e
 ```
-3. Optional: install `cmake --install build`
+3. Install `sudo cmake --install build`
+3. Uninstall `sudo xargs rm < build/install_manifest.txt`
