@@ -2,6 +2,7 @@
 
 # python
 .env
+.python-version
 __pycache__
 
 # compilation results
