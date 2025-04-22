@@ -2,8 +2,8 @@
 #include "pyscheduler/library_export.hpp"
 
 #include <atomic>
-#include <blockingconcurrentqueue.h>
 #include <chrono>
+#include <moodycamel/blockingconcurrentqueue.h>
 #include <filesystem>
 #include <future>
 #include <iostream>
