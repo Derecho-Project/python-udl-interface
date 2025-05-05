@@ -3,12 +3,12 @@
 
 #include <atomic>
 #include <chrono>
-#include <moodycamel/blockingconcurrentqueue.h>
 #include <filesystem>
 #include <future>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <moodycamel/blockingconcurrentqueue.h>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 #include <queue>
@@ -210,3 +210,5 @@ private:
 };
 
 } // namespace pyscheduler
+
+#include "pyscheduler/details/pyscheduler_impl.hpp"
