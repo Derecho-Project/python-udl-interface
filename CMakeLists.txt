@@ -4,14 +4,16 @@ project(pyscheduler VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
+find_package(pybind11 CONFIG REQUIRED)
+find_package(concurrentqueue CONFIG REQUIRED)
 
-find_package(pybind11 REQUIRED)
-find_package(concurrentqueue REQUIRED)
-
-add_library(${PROJECT_NAME} SHARED "include/pyscheduler/pyscheduler.cpp")
-target_link_libraries(pyscheduler PUBLIC pybind11::embed concurrentqueue::concurrentqueue)
-target_include_directories(pyscheduler
-    PUBLIC
+# create library target
+add_library(${PROJECT_NAME} INTERFACE)
+target_link_libraries(${PROJECT_NAME} INTERFACE
+    pybind11::embed
+    concurrentqueue::concurrentqueue
+)
+target_include_directories(${PROJECT_NAME} INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
