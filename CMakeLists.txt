@@ -25,7 +25,7 @@ if(BUILD_EXAMPLES)
 endif()
 
 # Build test cases
-option(BUILD_TESTS "Build test cases" ON)
+option(BUILD_TESTS "Build test cases" OFF)
 if(BUILD_TESTS)
     add_subdirectory(extern/Catch2)
     enable_testing()
