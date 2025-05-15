@@ -24,6 +24,14 @@ if(BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
+# Build test cases
+option(BUILD_TESTS "Build test cases" OFF)
+if(BUILD_TESTS)
+    add_subdirectory(extern/Catch2)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 # Install
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
