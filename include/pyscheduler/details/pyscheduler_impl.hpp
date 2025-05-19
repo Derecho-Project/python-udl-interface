@@ -1,4 +1,9 @@
-#include "pyscheduler/pyscheduler.hpp"
+#ifdef __INTELLISENSE__
+#	include "pyscheduler/pyscheduler.hpp"
+#endif
+
+#include "pyscheduler/move_only.hpp"
+#include <cassert>
 #include <chrono>
 
 namespace pyscheduler {
@@ -10,10 +15,12 @@ PyManager::InvokeHandler::InvokeHandler(size_t id, std::unique_ptr<PyManager> ma
 	: _id(id)
 	, _manager(std::move(manager)) { }
 
-const std::shared_ptr<std::pair<pybind11::module_, pybind11::object>>
+const std::shared_ptr<std::pair<pybind11::module_, pybind11::object>>&
 PyManager::InvokeHandler::getModuleAndFunc() {
 	// need to lock py_mutex because we don't want a vector resize
 	// to happen during lookup
+
+	// no need to acquire gil because not incrementing python reference count
 
 	// should allow multiple reads concurrently which don't mutate state
 	PyManager::SharedState& state = _manager->shared();
@@ -21,16 +28,77 @@ PyManager::InvokeHandler::getModuleAndFunc() {
 	return _manager->shared().py_modules.at(_id);
 }
 
+template <typename ReturnType, typename... Args>
+ReturnType PyManager::InvokeHandler::invoke(Args&&... args) {
+	auto mod_and_func = getModuleAndFunc();
+	pybind11::gil_scoped_acquire gil;
+	pybind11::object result = mod_and_func->second(std::forward<Args>(args)...);
+	return result.cast<ReturnType>();
+}
+
+template <typename Callback, typename... Args>
+auto PyManager::InvokeHandler::invoke(Callback&& callback, Args&&... args)
+	-> std::invoke_result_t<Callback, pybind11::object> {
+	auto mod_and_func = getModuleAndFunc();
+	pybind11::gil_scoped_acquire gil;
+	pybind11::object result = mod_and_func->second(std::forward<Args>(args)...);
+	return callback(result);
+}
+template <typename Callback, typename... Args>
+auto PyManager::InvokeHandler::queue_invoke(Callback&& callback, Args&&... args)
+	-> std::future<std::invoke_result_t<Callback, pybind11::object>> {
+	// Need to wrap a promise inside a shared_ptr because Promises are not
+	// copy constructable (requirement enforced by appending to task queue)
+	//
+	// solution was to wrap a promise inside a shared pointer, which is
+	// copy constructable
+	using ReturnType = std::invoke_result_t<Callback, pybind11::object>;
+	using PromisePtr = std::shared_ptr<std::promise<ReturnType>>;
+
+	auto args_tuple = std::make_tuple(std::forward<Args>(args)...);
+	PromisePtr promise_ptr = std::make_shared<std::promise<ReturnType>>();
+	std::future<ReturnType> future = promise_ptr->get_future();
+
+	// Dear reader, I'm sorry
+	// this section creates a closure that executes a python method with
+	// the provided arguments
+	//
+	// the return result from the python function is processed using the
+	// callback function, and the value from that is stored into the
+	// promise.
+
+	auto mod_and_func = getModuleAndFunc();
+	auto method = [this,
+				   callback = std::move(callback),
+				   mod_and_func = std::move(mod_and_func),
+				   args_tuple = std::move(args_tuple),
+				   promise_ptr]() mutable {
+		pybind11::gil_scoped_acquire gil;
+		pybind11::object result = std::apply(
+			[&mod_and_func](auto&&... unpackedArgs) {
+				return mod_and_func->second(std::forward<decltype(unpackedArgs)>(unpackedArgs)...);
+			},
+			args_tuple);
+
+		promise_ptr->set_value(callback(result));
+	};
+	PyManager::shared().task_queue.enqueue(std::move(method));
+	return future;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Impl PyManager
 ///////////////////////////////////////////////////////////////////////////////
 
+PyManager::SharedState PyManager::_instance;
+
 PyManager::PyManager() {
+	// this lock should be dropped at return so that postcondition (Python Interpreter Initialized)
+	// is guaranteed
 	std::unique_lock lock(shared().py_mutex);
 	if(shared().arc.fetch_add(1) == 0) {
 		shared().main_worker = std::thread(&PyManager::mainLoop, this);
 	}
-
 	// small cost paid to block until interpreter is initalized
 	while(!shared().interpreter_initialized)
 		continue;
@@ -49,8 +117,8 @@ PyManager::~PyManager() {
 	}
 }
 
-PyManager::InvokeHandler PyManager::getPythonModule(const std::string& module_name,
-													const std::string& entry_point) {
+PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_name,
+													 const std::string& entry_point) {
 
 	SharedState& state = shared();
 
@@ -67,17 +135,17 @@ PyManager::InvokeHandler PyManager::getPythonModule(const std::string& module_na
 
 		pybind11::gil_scoped_acquire gil;
 
-		pybind11::module_ mod = pybind11::module_::import(module_name.c_str());
-
-		if(!mod) {
-			PyErr_Print();
+		pybind11::module_ mod;
+		try {
+			mod = pybind11::module_::import(module_name.c_str());
+		} catch(pybind11::error_already_set& e) {
 			throw std::invalid_argument("Could not import module: " + module_name);
 		}
 
-		pybind11::object func = mod.attr(entry_point.c_str());
-
-		if(!func) {
-			PyErr_Print();
+		pybind11::object func;
+		try {
+			func = mod.attr(entry_point.c_str());
+		} catch(pybind11::error_already_set& e) {
 			throw std::invalid_argument("Could not find the '" + entry_point +
 										"' method in module " + module_name);
 		}
@@ -89,7 +157,6 @@ PyManager::InvokeHandler PyManager::getPythonModule(const std::string& module_na
 				std::make_pair(mod, func)));
 		state.py_invoke_handler_map[module_name] = id;
 		lock.unlock();
-
 		return PyManager::InvokeHandler(id, std::make_unique<PyManager>());
 	}
 
@@ -130,8 +197,9 @@ void PyManager::mainLoop() {
 			std::vector<std::thread> sub_workers;
 			for(size_t i = 0; i < NUM_WORKERS; i++) {
 				sub_workers.emplace_back(std::thread([i]() {
-					while(shared().threads_active) {
-						std::function<void()> task;
+					// worker should only end if stop signal is set and queue is empty
+					while(shared().threads_active || shared().task_queue.size_approx() > 0) {
+						MoveOnlyFunction<void()> task;
 
 						// have a small timeout so threads can wake up and check if they
 						// need to exit.
@@ -145,7 +213,6 @@ void PyManager::mainLoop() {
 							continue;
 						}
 
-						// std::cout << shared().task_queue.size_approx() << std::endl;
 						task();
 					}
 				}));
@@ -167,10 +234,9 @@ void PyManager::mainLoop() {
 		// we clear and drop all items in queue to safely free
 		// memory.
 		while(shared().task_queue.size_approx() > 0) {
-			std::function<void()> black_box;
+			MoveOnlyFunction<void()> black_box;
 			shared().task_queue.try_dequeue(black_box);
 		}
-
 	} // end python interpreter
 }
 } // namespace pyscheduler
