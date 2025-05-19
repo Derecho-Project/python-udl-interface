@@ -58,3 +58,5 @@ Can be installed ob Ubuntu using `sudo apt install pybind11-dev libconcurrentque
 ```
 3. Install `sudo cmake --install build`
 3. Uninstall `sudo xargs rm < build/install_manifest.txt`
+
+The configure script also supports custom install prefix. You can either use the `-p | --prefix` flag, or specify the `PYTHON_UDL_INTERFACE_PREFIX` environment variable.
