@@ -7,4 +7,6 @@ __pycache__
 
 # compilation results
 build
+build*
 build-*
+
