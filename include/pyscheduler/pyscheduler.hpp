@@ -1,5 +1,6 @@
 #pragma once
 #include "pyscheduler/library_export.hpp"
+#include "pyscheduler/move_only.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -45,15 +46,6 @@ public:
 		friend PyManager;
 
 	public:
-		/// @brief Retrieves the Python module and function associated with this handler.
-		/// @return A shared ptr to a pair, where the first element is the Python
-		/// module and the second element is the Python function object.
-		///
-		/// @note This function does not require the GIL because it does not increment the reference
-		/// count of the underlying Python objects. If the Pybind11 object copy constructor is called,
-		/// the current thread must hold the GIL.
-		const std::shared_ptr<std::pair<pybind11::module_, pybind11::object>> getModuleAndFunc();
-
 		/// @brief Synchronously invokes the Python function with given arguments.
 		///
 		///	This method acquires the GIL and calls the Python function, then casts the result into the
@@ -65,12 +57,7 @@ public:
 		/// @return The result of the Python function call, cast to ReturnType.
 		/// @return Result of the Python function call
 		template <typename ReturnType, typename... Args>
-		ReturnType invoke(Args&&... args) {
-			auto mod_and_func = getModuleAndFunc();
-			pybind11::gil_scoped_acquire gil;
-			pybind11::object result = mod_and_func->second(std::forward<Args>(args)...);
-			return result.cast<ReturnType>();
-		}
+		ReturnType invoke(Args&&... args);
 
 		/// @brief Synchronously invokes the Python function and processes its result with a callback.
 		///
@@ -83,13 +70,8 @@ public:
 		///  @param args Arguments to forward to the Python function.
 		///  @return The result produced by the callback function.
 		template <typename Callback, typename... Args>
-		auto invoke(Callback callback,
-					Args&&... args) -> std::invoke_result_t<Callback, pybind11::object> {
-			auto mod_and_func = getModuleAndFunc();
-			pybind11::gil_scoped_acquire gil;
-			pybind11::object result = mod_and_func->second(std::forward<Args>(args)...);
-			return callback(result);
-		}
+		auto invoke(Callback&& callback, Args&&... args)
+			-> std::invoke_result_t<Callback, pybind11::object>;
 
 		/// @brief Asynchronously invokes the Python function and processes its result with a callback.
 		///
@@ -110,44 +92,20 @@ public:
 		///
 		/// @note Compile with the "-Wno-attributes" flag to disable warnings about capture lifetimes
 		template <typename Callback, typename... Args>
-		auto queue_invoke(Callback callback, Args&&... args)
-			-> std::future<std::invoke_result_t<Callback, pybind11::object>> {
+		auto queue_invoke(Callback&& callback, Args&&... args)
+			-> std::future<std::invoke_result_t<Callback, pybind11::object>>;
 
-			// Need to wrap a promise inside a shared_ptr because Promises are not
-			// copy constructable (requirement enforced by appending to task queue)
-			//
-			// solution was to wrap a promise inside a shared pointer, which is
-			// copy constructable
-			using ReturnType = std::invoke_result_t<Callback, pybind11::object>;
-			using PromisePtr = std::shared_ptr<std::promise<ReturnType>>;
-
-			auto args_tuple = std::make_tuple(std::forward<Args>(args)...);
-			PromisePtr promise_ptr = std::make_shared<std::promise<ReturnType>>();
-			std::future<ReturnType> future = promise_ptr->get_future();
-
-			// Dear reader, I'm sorry
-			// this section creates a closure that executes a python method with
-			// the provided arguments
-			//
-			// the return result from the python function is processed using the
-			// callback function, and the value from that is stored into the
-			// promise.
-			auto method =
-				[this, callback, args_tuple = std::move(args_tuple), promise_ptr]() mutable {
-					auto mod_and_func = getModuleAndFunc();
-					pybind11::object result = std::apply(
-						[&mod_and_func](auto&&... unpackedArgs) {
-							pybind11::gil_scoped_acquire gil;
-							return mod_and_func->second(
-								std::forward<decltype(unpackedArgs)>(unpackedArgs)...);
-						},
-						args_tuple);
-
-					promise_ptr->set_value(callback(result));
-				};
-			PyManager::shared().task_queue.enqueue(std::move(method));
-			return future;
-		}
+	private:
+		/// @brief Retrieves the Python module and function associated with this handler.
+		/// @return A shared ptr to a pair, where the first element is the Python
+		/// module and the second element is the Python function object.
+		///
+		/// @note This function does not require the GIL because it does not increment the reference
+		/// count of the underlying Python objects. If the Pybind11 object copy constructor is called,
+		/// the current thread must hold the GIL.
+		///
+		/// @note Should not be public because we don't want dangling references
+		const std::shared_ptr<std::pair<pybind11::module_, pybind11::object>>& getModuleAndFunc();
 
 	private:
 		/// @brief
@@ -179,8 +137,8 @@ public:
 	/// @param module_name Name of the Python module to load.
 	/// @param entry_point Function name to retrieve from the module.
 	/// @return An InvokeHandler for calling the specified function
-	InvokeHandler getPythonModule(const std::string& module_name,
-								  const std::string& entry_point = "invoke");
+	InvokeHandler loadPythonModule(const std::string& module_name,
+								   const std::string& entry_point = "invoke");
 
 private:
 	struct PYSCHEDULER_LIBRARY_LOCAL SharedState {
@@ -193,7 +151,7 @@ private:
 		/// @brief extremely fast queue that has several microseconds performance
 		/// @note thread safe queue but is not linearizable nor sequentially consistent.
 		/// this is ok because all methods are processed independently.
-		moodycamel::BlockingConcurrentQueue<std::function<void()>> task_queue;
+		moodycamel::BlockingConcurrentQueue<MoveOnlyFunction<void()>> task_queue;
 
 		std::atomic<bool> threads_active = true;
 		std::thread main_worker;
@@ -201,9 +159,9 @@ private:
 		std::atomic<bool> interpreter_initialized = false;
 	};
 
+	static SharedState _instance;
 	inline static SharedState& shared() {
-		static SharedState instance;
-		return instance;
+		return _instance;
 	}
 
 	void mainLoop();
