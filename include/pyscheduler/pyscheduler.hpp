@@ -3,13 +3,13 @@
 #include "pyscheduler/move_only.hpp"
 
 #include <atomic>
+#include <blockingconcurrentqueue.h>
 #include <chrono>
 #include <filesystem>
 #include <future>
 #include <iostream>
 #include <map>
 #include <memory>
-#include <moodycamel/blockingconcurrentqueue.h>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 #include <queue>
