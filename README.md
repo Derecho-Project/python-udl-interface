@@ -47,7 +47,7 @@ Package Dependencies
 - [moodycamel::BlockingConcurrentQueue](https://github.com/cameron314/concurrentqueue)  
 - [dmlc::dlpack](https://github.com/dmlc/dlpack.git)
 
-Can be installed ob Ubuntu using `sudo apt install pybind11-dev libconcurrentqueue-dev libdlpack-dev`
+I realized that package versions are a pain to deal with, so I've decided to vendor working versions in the `extern` directory. 
 
 ## Installation
 1. Initialize submodules `git submodule update --init --recursive`
