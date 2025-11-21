@@ -9,7 +9,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <moodycamel/blockingconcurrentqueue.h>
+#include <blockingconcurrentqueue.h>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 #include <queue>

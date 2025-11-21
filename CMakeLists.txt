@@ -1,17 +1,27 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.27)
 cmake_policy(SET CMP0148 NEW)
 project(pyscheduler VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
+# fetch concurrent queue
+include(FetchContent)
+FetchContent_Declare(
+    concurrentqueue
+    GIT_REPOSITORY https://github.com/cameron314/concurrentqueue.git
+    GIT_TAG master
+)
+FetchContent_MakeAvailable(concurrentqueue)
+
 find_package(pybind11 CONFIG REQUIRED)
-find_package(concurrentqueue CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 # create library target
 add_library(${PROJECT_NAME} INTERFACE)
 target_link_libraries(${PROJECT_NAME} INTERFACE
     pybind11::embed
-    concurrentqueue::concurrentqueue
+    concurrentqueue
+    Threads::Threads
 )
 target_include_directories(${PROJECT_NAME} INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
