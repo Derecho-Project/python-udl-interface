@@ -3,6 +3,7 @@ cmake_policy(SET CMP0148 NEW)
 project(pyscheduler VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # fetch concurrent queue
 include(FetchContent)
@@ -27,6 +28,43 @@ target_include_directories(${PROJECT_NAME} INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+
+# Diagnostic flags
+option(ENABLE_GPROF "Enable gprof profiling flags (-pg)" OFF)
+option(ENABLE_FP "Enable frame pointer for flamegraph generation" OFF)
+option(ENABLE_ASAN  "Enable AddressSanitizer" OFF)
+option(ENABLE_TSAN  "Enable ThreadSanitizer" OFF)
+if (ENABLE_ASAN AND ENABLE_TSAN)
+    message(FATAL_ERROR "ASan and TSan cannot be enabled simultaneously.")
+endif()
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    if (ENABLE_GPROF)
+        message(STATUS "Enabling gprof (-pg)")
+        add_compile_options(-pg)
+        add_link_options(-pg)
+    endif()
+
+    if (ENABLE_FP)
+        message(STATUS "Enabling frame pointer (-fno-omit-frame-pointer)")
+        add_compile_options(-fno-omit-frame-pointer -g)
+        if (CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
+            add_compile_options(-g)
+        endif()
+    endif()
+
+    if (ENABLE_ASAN)
+        message(STATUS "Using AddressSanitizer")
+        add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address)
+    endif()
+
+    if (ENABLE_TSAN)
+        message(STATUS "Using ThreadSanitizer")
+        add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=thread)
+    endif()
+endif()
 
 # Build example programs
 option(BUILD_EXAMPLES "Build example programs" OFF)
