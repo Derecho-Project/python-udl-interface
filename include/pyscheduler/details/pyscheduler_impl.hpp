@@ -119,6 +119,10 @@ PyManager::~PyManager() {
 PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_name,
 													 const std::string& entry_point) {
 
+    if (!shared().interpreter_initialized) {
+        throw std::runtime_error("Python interpreter not initialized");
+    }
+
 	SharedState& state = shared();
 
 	// require write lock
@@ -179,70 +183,84 @@ void PyManager::mainLoop() {
 			"Cannot reinitialize Python interpreter once it has been shut down.");
 	}
 
+	// Do not register python signal handlers
+	// https://docs.python.org/3/c-api/init.html#c.Py_InitializeEx
+	// Similar to Py_InitializeEx(0);
+	pybind11::initialize_interpreter(false);
+
+	pybind11::module_ sys = pybind11::module_::import("sys");
+	pybind11::module_ atexit = pybind11::module_::import("atexit");
+
+	// keep these as "R-values" so they don't live past the line they were declared on;
+	pybind11::list(sys.attr("path")).append(".");
+	int major = pybind11::list(sys.attr("version_info"))[0].cast<int>();
+	int minor = pybind11::list(sys.attr("version_info"))[1].cast<int>();
+
 	{
-		// Do not register python signal handlers
-		// https://docs.python.org/3/c-api/init.html#c.Py_InitializeEx
+		// do not acquire GIL in this chunk because workers need to acquire
+		// GIL to finish their workload
+		pybind11::gil_scoped_release gil;
 
-		// passing false as an argument gives a RAII version of
-		// Py_InitializeEx(0);
-
-		// the python interpreter must be destroyed by the same thread that created it
-		pybind11::scoped_interpreter interpreter(false);
-
+		// The GIL protects Python objects, but does not protect against PyBind11's own global C++ singleton
+		// intialization Thus, we need to store that the interpreter is initialialized after a "fence" operation
+		// (scoped_release)
 		shared().interpreter_initialized.store(true);
 
-		pybind11::module_ sys = pybind11::module_::import("sys");
-		pybind11::list sys_path = sys.attr("path");
-		sys_path.append(".");
+		std::vector<std::thread> sub_workers;
+		for(size_t i = 0; i < NUM_WORKERS; i++) {
+			sub_workers.emplace_back(std::thread([i]() {
+				// worker should only end if stop signal is set and queue is empty
+				while(shared().threads_active || shared().task_queue.size_approx() > 0) {
+					MoveOnlyFunction<void()> task;
 
-		{
-			// do not acquire GIL in this chunk because workers need to acquire
-			// GIL to finish their workload
-			pybind11::gil_scoped_release gil;
+					// have a small timeout so threads can wake up and check if they
+					// need to exit.
 
-			std::vector<std::thread> sub_workers;
-			for(size_t i = 0; i < NUM_WORKERS; i++) {
-				sub_workers.emplace_back(std::thread([i]() {
-					// worker should only end if stop signal is set and queue is empty
-					while(shared().threads_active || shared().task_queue.size_approx() > 0) {
-						MoveOnlyFunction<void()> task;
+					// should not cause program to crash, but should not wake up frequently
+					// to take up precious CPU cycles.
+					bool success =
+						shared().task_queue.wait_dequeue_timed(task, milliseconds(100));
 
-						// have a small timeout so threads can wake up and check if they
-						// need to exit.
-
-						// should not cause program to crash, but should not wake up frequently
-						// to take up precious CPU cycles.
-						bool success =
-							shared().task_queue.wait_dequeue_timed(task, milliseconds(100));
-
-						if(!success) {
-							continue;
-						}
-
-						task();
+					if(!success) {
+						continue;
 					}
-				}));
-			}
 
-			for(auto& worker : sub_workers) {
-				worker.join();
-			}
-		} // end gil_scoped_release
-
-		// need to reacquire GIL since we're destroying the interpreter
-		// here, we do not need to match an ensure with a release
-		// because Py_Finalize terminates execution
-
-		shared().py_invoke_handler_map.clear();
-		shared().py_objects.clear();
-
-		// closures still might hold references to python objects
-		// we clear and drop all items in queue to safely free
-		// memory.
-		while(shared().task_queue.size_approx() > 0) {
-			MoveOnlyFunction<void()> black_box;
-			shared().task_queue.try_dequeue(black_box);
+					task();
+				}
+			}));
 		}
-	} // end python interpreter
+
+		for(auto& worker : sub_workers) {
+			worker.join();
+		}
+	} // end gil_scoped_release
+
+	// need to reacquire GIL since we're destroying the interpreter
+	// here, we do not need to match an ensure with a release
+	// because Py_Finalize terminates execution
+
+	shared().py_invoke_handler_map.clear();
+	shared().py_objects.clear();
+
+	// closures still might hold references to python objects
+	// we clear and drop all items in queue to safely free
+	// memory.
+	while(shared().task_queue.size_approx() > 0) {
+		MoveOnlyFunction<void()> black_box;
+		shared().task_queue.try_dequeue(black_box);
+	}
+
+	// no need to finalize python interpreter, since we'll let the OS do the teardown
+	// we'll do a garbage collection pass so ASAN does not get mad at us
+
+	pybind11::module_ gc = pybind11::module_::import("gc");
+	gc.attr("collect")(); 
+	gc.attr("collect")(); 
+
+	atexit = {};
+	sys = {}; 
+	gc = {};
+
+	pybind11::finalize_interpreter();
 }
 } // namespace pyscheduler
