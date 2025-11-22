@@ -9,7 +9,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
-#include <moodycamel/blockingconcurrentqueue.h>
+#include <blockingconcurrentqueue.h>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 #include <queue>
@@ -96,22 +96,13 @@ public:
 			-> std::future<std::invoke_result_t<Callback, pybind11::object>>;
 
 	private:
-		/// @brief Retrieves the Python module and function associated with this handler.
-		/// @return A shared ptr to a pair, where the first element is the Python
-		/// module and the second element is the Python function object.
-		///
-		/// @note This function does not require the GIL because it does not increment the reference
-		/// count of the underlying Python objects. If the Pybind11 object copy constructor is called,
-		/// the current thread must hold the GIL.
-		///
-		/// @note Should not be public because we don't want dangling references
-		const std::shared_ptr<std::pair<pybind11::module_, pybind11::object>>& getModuleAndFunc();
-
-	private:
 		/// @brief
 		/// @param id
 		/// @param manager
-		InvokeHandler(size_t id, std::unique_ptr<PyManager> manager);
+		InvokeHandler(size_t id, 
+			std::shared_ptr<pybind11::object> resource,
+			std::unique_ptr<PyManager> manager
+		);
 
 		size_t _id;
 
@@ -119,6 +110,10 @@ public:
 		// finalizing the python interpreter and releasing all imported modules
 		// until all InvokeHandlers go out of scope
 		std::unique_ptr<PyManager> _manager;
+
+		
+		/// @brief python object that this InvokeHandler attempts to access
+		std::shared_ptr<pybind11::object> _resource;
 	};
 
 public:
@@ -141,12 +136,18 @@ public:
 								   const std::string& entry_point = "invoke");
 
 private:
+	struct PYSCHEDULER_LIBRARY_LOCAL PyInvokeHandlerEntry {
+		pybind11::module_ module_;
+		std::unordered_map<std::string, size_t> handler_map;
+	};
+
 	struct PYSCHEDULER_LIBRARY_LOCAL SharedState {
 		std::atomic<uint64_t> arc = 0;
 
-		std::shared_mutex py_mutex;
-		std::map<std::string, size_t> py_invoke_handler_map;
-		std::vector<std::shared_ptr<std::pair<pybind11::module_, pybind11::object>>> py_modules;
+		/// @brief stores all loaded modules and objects
+		std::unordered_map<std::string, PyInvokeHandlerEntry > py_invoke_handler_map;
+
+		std::vector<std::shared_ptr<pybind11::object>> py_objects;
 
 		/// @brief extremely fast queue that has several microseconds performance
 		/// @note thread safe queue but is not linearizable nor sequentially consistent.
