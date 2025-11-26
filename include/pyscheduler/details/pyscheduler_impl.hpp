@@ -39,7 +39,7 @@ auto PyManager::InvokeHandler::queue_invoke(Callback&& callback, Args&&... args)
     -> std::future<std::invoke_result_t<Callback, pybind11::object>>
 {
     using ReturnType = std::invoke_result_t<Callback, pybind11::object>;
-    using PromisePtr = std::shared_ptr<std::promise<ReturnType>>;
+    using PromisePtr = std::unique_ptr<std::promise<ReturnType>>;
 
     // Safety: we don't want to ever store pybind11::object in the future,
     // because its destruction might happen without the GIL.
@@ -50,16 +50,16 @@ auto PyManager::InvokeHandler::queue_invoke(Callback&& callback, Args&&... args)
     // you should only call this function while holding the GIL.
     auto args_tuple = std::make_tuple(std::forward<Args>(args)...);
 
-    auto promise_ptr = std::make_shared<std::promise<ReturnType>>();
+    auto promise_ptr = std::make_unique<std::promise<ReturnType>>();
     auto future      = promise_ptr->get_future();
 
     // Everything captured by value; the tuple is moved in, so the only live
     // pybind11::object instances will be inside this lambda.
     auto method =
         [this,
-         cb         = std::forward<Callback>(callback),
-         args       = std::move(args_tuple),
-         promise_ptr]() mutable
+         cb          = std::forward<Callback>(callback),
+         args        = std::move(args_tuple),
+         promise_ptr = std::move(promise_ptr)]() mutable
         {
             pybind11::gil_scoped_acquire gil;
 
