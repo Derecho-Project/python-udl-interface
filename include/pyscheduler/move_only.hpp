@@ -25,7 +25,7 @@ public:
 	explicit operator bool() const;
 
 private:
-	using InvokeFn = R (*)(void*, Args&&...);
+	using InvokeFn = R (*)(void*, Args...);
 	using DestroyFn = void (*)(void*);
 
 	std::unique_ptr<void, DestroyFn> _obj{ nullptr, nullptr };
