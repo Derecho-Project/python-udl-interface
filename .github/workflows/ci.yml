@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: tests
+            asan: "OFF"
+            tsan: "OFF"
+          - name: asan
+            asan: "ON"
+            tsan: "OFF"
+          - name: tsan
+            asan: "OFF"
+            tsan: "ON"
+
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Python packages
+        run: pip install pybind11 numpy
+
+      - name: Configure
+        run: |
+          cmake --preset debug \
+            -DBUILD_TESTS=ON \
+            -DENABLE_ASAN=${{ matrix.asan }} \
+            -DENABLE_TSAN=${{ matrix.tsan }} \
+            -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)"
+
+      - name: Build
+        run: cmake --build --preset debug
+
+      - name: Test
+        run: ctest --test-dir build/debug --output-on-failure
+        env:
+          LSAN_OPTIONS: ${{ matrix.asan == 'ON' && format('suppressions={0}/lsan_supressions.txt', github.workspace) || '' }}
