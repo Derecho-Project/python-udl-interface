@@ -199,7 +199,7 @@ PyManager::SharedState PyManager::_instance;
 
 PyManager::PyManager() {
 	if(shared().arc.fetch_add(1) == 0) {
-		shared().main_worker = std::thread(&PyManager::mainLoop, this);
+		shared().destructor_thread = std::thread(&PyManager::mainLoop, this);
 	}
 	// small cost paid to block until interpreter is initialized
 	while(!shared().interpreter_initialized)
@@ -214,7 +214,11 @@ PyManager::~PyManager() {
 		// main worker handles interpreter cleanup
 		// https://docs.python.org/3/c-api/init.html#c.Py_FinalizeEx
 		//   Py_FinalizeEx should be called in the same thread as Py_InitializeEx
-		shared().main_worker.join();
+		{
+			std::lock_guard<std::mutex> lock(shared().destructor_mutex);
+			shared().threads_active = false;
+		}
+		shared().destructor_cv.notify_all();
 	}
 }
 
@@ -295,10 +299,8 @@ void PyManager::mainLoop() {
 
 		shared().interpreter_initialized.store(true);
 
-		// Wait until shutdown signal — InvokeHandler workers manage their own threads
-		while(shared().threads_active) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		}
+		std::unique_lock<std::mutex> lock(shared().destructor_mutex);
+		shared().destructor_cv.wait(lock, [] { return !shared().threads_active; });
 	} // GIL reacquired
 
 	shared().py_invoke_handler_map.clear();

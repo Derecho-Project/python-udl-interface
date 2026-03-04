@@ -168,6 +168,7 @@ public:
 private:
 	struct PYSCHEDULER_LIBRARY_LOCAL PyInvokeHandlerEntry {
 		pybind11::module_ module_;
+		/// @brief maps a function name to its index in the PyManager's py_objects vector
 		std::unordered_map<std::string, size_t> handler_map;
 	};
 
@@ -179,8 +180,10 @@ private:
 
 		std::vector<std::shared_ptr<pybind11::object>> py_objects;
 
+		std::mutex destructor_mutex;
+		std::condition_variable destructor_cv;
+		std::thread destructor_thread;
 		std::atomic<bool> threads_active = true;
-		std::thread main_worker;
 
 		std::atomic<bool> interpreter_initialized = false;
 	};
