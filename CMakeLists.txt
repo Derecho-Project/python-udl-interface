@@ -1,97 +1,84 @@
 cmake_minimum_required(VERSION 3.27)
 cmake_policy(SET CMP0148 NEW)
+
 project(pyscheduler VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# fetch concurrent queue
-include(FetchContent)
-FetchContent_Declare(
-    concurrentqueue
-    GIT_REPOSITORY https://github.com/cameron314/concurrentqueue.git
-    GIT_TAG master
-)
-FetchContent_MakeAvailable(concurrentqueue)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+set(_pyscheduler_install_cmakedir "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}")
+
+option(BUILD_EXAMPLES "Build example programs" OFF)
+option(BUILD_TESTS "Build test cases" OFF)
+option(ENABLE_FP "Enable frame pointer for flamegraph generation" OFF)
+option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+
+if(ENABLE_ASAN AND ENABLE_TSAN)
+    message(FATAL_ERROR "ASan and TSan cannot be enabled simultaneously.")
+endif()
+
+add_subdirectory(extern/concurrentqueue)
 
 find_package(pybind11 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
-# create library target
 add_library(${PROJECT_NAME} INTERFACE)
+add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
+
+target_compile_features(${PROJECT_NAME} INTERFACE cxx_std_17)
+target_include_directories(${PROJECT_NAME} INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
 target_link_libraries(${PROJECT_NAME} INTERFACE
     pybind11::embed
     concurrentqueue
     Threads::Threads
 )
-target_include_directories(${PROJECT_NAME} INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
 
-# Diagnostic flags
-option(ENABLE_GPROF "Enable gprof profiling flags (-pg)" OFF)
-option(ENABLE_FP "Enable frame pointer for flamegraph generation" OFF)
-option(ENABLE_ASAN  "Enable AddressSanitizer" OFF)
-option(ENABLE_TSAN  "Enable ThreadSanitizer" OFF)
-if (ENABLE_ASAN AND ENABLE_TSAN)
-    message(FATAL_ERROR "ASan and TSan cannot be enabled simultaneously.")
-endif()
-
-if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    if (ENABLE_GPROF)
-        message(STATUS "Enabling gprof (-pg)")
-        add_compile_options(-pg)
-        add_link_options(-pg)
-    endif()
-
-    if (ENABLE_FP)
-        message(STATUS "Enabling frame pointer (-fno-omit-frame-pointer)")
-        add_compile_options(-fno-omit-frame-pointer -g)
-        if (CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
-            add_compile_options(-g)
-        endif()
-    endif()
-
-    if (ENABLE_ASAN)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    if(ENABLE_ASAN)
         message(STATUS "Using AddressSanitizer")
-        add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
-        add_link_options(-fsanitize=address)
+    endif()
+    if(ENABLE_TSAN)
+        message(STATUS "Using ThreadSanitizer")
     endif()
 
-    if (ENABLE_TSAN)
-        message(STATUS "Using ThreadSanitizer")
-        add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
-        add_link_options(-fsanitize=thread)
-    endif()
+    target_compile_options(${PROJECT_NAME} INTERFACE
+        $<$<BOOL:${ENABLE_FP}>:-fno-omit-frame-pointer>
+        $<$<AND:$<BOOL:${ENABLE_FP}>,$<CONFIG:Debug,RelWithDebInfo>>:-g>
+        $<$<BOOL:${ENABLE_ASAN}>:-fsanitize=address;-fno-omit-frame-pointer>
+        $<$<BOOL:${ENABLE_TSAN}>:-fsanitize=thread;-fno-omit-frame-pointer>
+    )
+    target_link_options(${PROJECT_NAME} INTERFACE
+        $<$<BOOL:${ENABLE_ASAN}>:-fsanitize=address>
+        $<$<BOOL:${ENABLE_TSAN}>:-fsanitize=thread>
+    )
 endif()
 
-# Build example programs
-option(BUILD_EXAMPLES "Build example programs" OFF)
 if(BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-# Build test cases
-option(BUILD_TESTS "Build test cases" OFF)
 if(BUILD_TESTS)
     add_subdirectory(extern/Catch2)
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable benchmark internal tests" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "Disable benchmark gtest-based tests" FORCE)
+    add_subdirectory(extern/benchmark)
     enable_testing()
     add_subdirectory(tests)
 endif()
 
-# Install
-include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
-
 install(
     TARGETS ${PROJECT_NAME}
     EXPORT ${PROJECT_NAME}Targets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} # .so / .dylib
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} # .a
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} # .exe on Windows
-    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} # for modern CMake
-
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
 install(
@@ -104,24 +91,25 @@ install(
     EXPORT ${PROJECT_NAME}Targets
     FILE ${PROJECT_NAME}Targets.cmake
     NAMESPACE ${PROJECT_NAME}::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+    DESTINATION ${_pyscheduler_install_cmakedir}
 )
 
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY AnyNewerVersion
+    ARCH_INDEPENDENT
 )
 
 configure_package_config_file(
     "${CMAKE_CURRENT_LIST_DIR}/cmake/Config.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+    INSTALL_DESTINATION ${_pyscheduler_install_cmakedir}
 )
 
 install(
     FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+        "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
+    DESTINATION ${_pyscheduler_install_cmakedir}
 )
