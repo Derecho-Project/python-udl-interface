@@ -59,7 +59,7 @@ auto PyManager::InvokeHandler::invoke(Callback&& callback, Args&&... args)
 	-> std::invoke_result_t<Callback, pybind11::object> {
 	pybind11::gil_scoped_acquire gil;
 	pybind11::object result = (*_state->resource.get())(std::forward<Args>(args)...);
-	return callback(result);
+	return callback(std::move(result));
 }
 
 template <typename CommitFn, typename Callback, typename... Args>
@@ -92,7 +92,7 @@ auto PyManager::InvokeHandler::queue_invoke(CommitFn&& commit_fn,
 	auto on_result = [cb = std::forward<Callback>(callback),
 					  promise](pybind11::object result) mutable {
 		try {
-			ReturnType value = std::invoke(cb, result);
+			ReturnType value = std::invoke(cb, std::move(result));
 			promise->set_value(std::move(value));
 		} catch(...) {
 			promise->set_exception(std::current_exception());
@@ -117,8 +117,8 @@ void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state) {
 
 	while(state->active || state->queue.size_approx() > 0 || !prefetch_buffer.empty()) {
 
-		// If we don't have enough items for a batch and queue is empty, block-wait
-		if(prefetch_buffer.size() < state->batch_size && state->queue.size_approx() == 0) {
+		// Block-wait only when prefetch buffer is empty and queue is empty
+		if(prefetch_buffer.empty() && state->queue.size_approx() == 0) {
 			QueueEntry entry;
 			bool got = state->queue.wait_dequeue_timed(entry, std::chrono::milliseconds(100));
 			if(!got) continue;
@@ -144,16 +144,10 @@ void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state) {
 				}
 			}
 
-			// Phase 2: Execute batch if we have enough items
-			size_t batch_target = state->batch_size;
+			// Phase 2: Execute batch — consume up to batch_size items (opportunistic)
+			size_t batch_target = std::min(state->batch_size, prefetch_buffer.size());
 
-			// On shutdown, drain partial batches to avoid stranding items
-			if(!state->active && prefetch_buffer.size() < state->batch_size &&
-			   !prefetch_buffer.empty()) {
-				batch_target = prefetch_buffer.size();
-			}
-
-			if(prefetch_buffer.size() >= batch_target && batch_target > 0) {
+			if(batch_target > 0) {
 				pybind11::list batch;
 				std::vector<MoveOnlyFunction<void(pybind11::object)>> result_callbacks;
 				std::vector<MoveOnlyFunction<void(std::exception_ptr)>> error_callbacks;
@@ -219,6 +213,7 @@ PyManager::~PyManager() {
 			shared().threads_active = false;
 		}
 		shared().destructor_cv.notify_all();
+		shared().destructor_thread.join();
 	}
 }
 
@@ -307,6 +302,9 @@ void PyManager::mainLoop() {
 	shared().py_objects.clear();
 
 	pybind11::module_ gc = pybind11::module_::import("gc");
+	gc.attr("collect")();
+	gc.attr("collect")();
+	gc.attr("collect")();
 	gc.attr("collect")();
 	gc.attr("collect")();
 

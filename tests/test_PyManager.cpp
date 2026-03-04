@@ -85,6 +85,47 @@ TEST_CASE("Asynchronous invoke perfect forwarding", "[basic]") {
 	}
 }
 
+TEST_CASE("SVD no requests lost", "[basic]") {
+	/// (<16MB of ram)
+	const int MAT_DIM = 100;
+	const int N = 1000;
+	auto commit = [](int n) -> pybind11::object { return pybind11::cast(n); };
+	auto extract_raw = [](pybind11::object&& obj) { return obj.release().ptr(); };
+
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler generate =
+		manager.loadPythonModule("tests.test_modules.svd", "generate");
+	PyManager::InvokeHandler compute =
+		manager.loadPythonModule("tests.test_modules.svd", "compute_svd_rank", 32, 3);
+
+	// step 1: generate the N matrices
+	std::vector<std::future<PyObject*>> matrix_futures;
+	for(int i = 0; i < N; i++) {
+		matrix_futures.emplace_back(generate.queue_invoke(commit, extract_raw, MAT_DIM));
+	}
+	std::vector<PyObject*> matrices;
+	for(int i = 0; i < N; i++) {
+		matrices.push_back(matrix_futures[i].get());
+		REQUIRE(matrices.back() != nullptr);
+	}
+
+	// step 2: compute the SVD rank of each matrix
+	auto commit_step2 = [](PyObject* ptr) -> pybind11::object {
+		return pybind11::reinterpret_steal<pybind11::object>(ptr);
+	};
+	auto callback_step2 = [](pybind11::object&& obj) { return obj.cast<int>(); };
+	std::vector<std::future<int>> rank_futures;
+	for(int i = 0; i < N; i++) {
+		rank_futures.emplace_back(compute.queue_invoke(commit_step2, callback_step2, matrices[i]));
+	}
+	int cnt = 0;
+	for(int i = 0; i < N; i++) {
+		int rank = rank_futures[i].get();
+		cnt++;
+	}
+	REQUIRE(cnt == N);
+}
+
 TEST_CASE("Batched asynchronous invoke", "[batch]") {
 	auto commit = [](int val) -> pybind11::object { return pybind11::cast(val); };
 	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
