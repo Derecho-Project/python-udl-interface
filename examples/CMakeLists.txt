@@ -1,5 +1,9 @@
-add_executable(add add/main.cpp)
-target_link_libraries(add PRIVATE pyscheduler)
+set(_example_targets
+	add
+	multithreaded
+)
 
-add_executable(tensor_share tensor_share/main.cpp)
-target_link_libraries(tensor_share PRIVATE pyscheduler)
+foreach(_target IN LISTS _example_targets)
+	add_executable(${_target} ${_target}/main.cpp)
+	target_link_libraries(${_target} PRIVATE pyscheduler::pyscheduler)
+endforeach()
