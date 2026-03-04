@@ -1,5 +1,6 @@
 set(_example_targets
 	add
+	multithreaded
 )
 
 foreach(_target IN LISTS _example_targets)
