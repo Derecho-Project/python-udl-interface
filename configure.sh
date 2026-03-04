@@ -24,7 +24,7 @@ to_preset(){ case "$1" in Debug) echo debug;; Release) echo release;; RelWithDeb
 
 command -v cmake >/dev/null 2>&1 || die "cmake not found in PATH"
 
-PRESET="debug" BUILD_EXAMPLES=OFF BUILD_TESTS=OFF
+MODE="debug" BUILD_EXAMPLES=OFF BUILD_TESTS=OFF
 ENABLE_ASAN=OFF ENABLE_TSAN=OFF ENABLE_FP=OFF
 RUN_BUILD=OFF RUN_INSTALL=OFF JOBS=""
 PYTHON_UDL_INTERFACE_PREFIX="${PYTHON_UDL_INTERFACE_PREFIX:-/usr/local}"
