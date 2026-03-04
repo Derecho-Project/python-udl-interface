@@ -1,6 +1,5 @@
 set(_example_targets
 	add
-	tensor_share
 )
 
 foreach(_target IN LISTS _example_targets)

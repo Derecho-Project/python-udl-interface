@@ -5,7 +5,6 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage: ./configure.sh [options]
-  --preset NAME         CMake preset (default from --mode)
   -m, --mode TYPE       Debug|Release|RelWithDebInfo (default: Debug)
   -t, --tests           BUILD_TESTS=ON
   -e, --examples        BUILD_EXAMPLES=ON
@@ -25,14 +24,13 @@ to_preset(){ case "$1" in Debug) echo debug;; Release) echo release;; RelWithDeb
 
 command -v cmake >/dev/null 2>&1 || die "cmake not found in PATH"
 
-MODE=Debug PRESET="" BUILD_EXAMPLES=OFF BUILD_TESTS=OFF
+PRESET="debug" BUILD_EXAMPLES=OFF BUILD_TESTS=OFF
 ENABLE_ASAN=OFF ENABLE_TSAN=OFF ENABLE_FP=OFF
 RUN_BUILD=OFF RUN_INSTALL=OFF JOBS=""
 PYTHON_UDL_INTERFACE_PREFIX="${PYTHON_UDL_INTERFACE_PREFIX:-/usr/local}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --preset) [[ $# -lt 2 ]] && die "missing value for $1"; PRESET="$2"; shift ;;
         -m|--mode) [[ $# -lt 2 ]] && die "missing value for $1"; MODE="$2"; shift ;;
         -t|--tests) BUILD_TESTS=ON ;;
         -e|--examples) BUILD_EXAMPLES=ON ;;
@@ -51,7 +49,6 @@ done
 
 [[ "$ENABLE_ASAN" == ON && "$ENABLE_TSAN" == ON ]] && die "--asan and --tsan cannot be used together"
 [[ -n "$JOBS" && ! "$JOBS" =~ ^[0-9]+$ ]] && die "--jobs must be a non-negative integer"
-[[ -z "$PRESET" ]] && PRESET="$(to_preset "$MODE")"
 
 pybind_arg=()
 if command -v python3 >/dev/null 2>&1; then
@@ -59,8 +56,8 @@ if command -v python3 >/dev/null 2>&1; then
     [[ -n "$pybind_dir" && -d "$pybind_dir" ]] && pybind_arg=("-Dpybind11_DIR=$pybind_dir")
 fi
 
-echo "Configuring preset: $PRESET"
-cmake --preset "$PRESET" \
+echo "Configuring preset: $MODE"
+cmake --preset "$MODE" \
     --install-prefix "$PYTHON_UDL_INTERFACE_PREFIX" \
     -DBUILD_EXAMPLES="$BUILD_EXAMPLES" \
     -DBUILD_TESTS="$BUILD_TESTS" \
@@ -70,16 +67,17 @@ cmake --preset "$PRESET" \
     "${pybind_arg[@]}"
 
 if [[ "$RUN_BUILD" == ON || "$RUN_INSTALL" == ON ]]; then
-    build_cmd=(cmake --build --preset "$PRESET")
+    build_cmd=(cmake --build --preset "$MODE")
     [[ -n "$JOBS" ]] && build_cmd+=(--parallel "$JOBS")
+    echo "${build_cmd[@]}"
     "${build_cmd[@]}"
 fi
 
 if [[ "$RUN_INSTALL" == ON ]]; then
-    cmake --install "build/$PRESET"
-    echo "Done. Installed from build/$PRESET"
+    cmake --install "build/$MODE"
+    echo "Done. Installed from build/$MODE"
 elif [[ "$RUN_BUILD" == ON ]]; then
-    echo "Done. Built preset $PRESET"
+    echo "Done. Built preset $MODE"
 else
-    echo "Configuration complete. You can now run: cmake --build --preset $PRESET"
+    echo "Configuration complete. You can now run: cmake --build --preset $MODE"
 fi

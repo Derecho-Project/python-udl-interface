@@ -304,9 +304,6 @@ void PyManager::mainLoop() {
 	pybind11::module_ gc = pybind11::module_::import("gc");
 	gc.attr("collect")();
 	gc.attr("collect")();
-	gc.attr("collect")();
-	gc.attr("collect")();
-	gc.attr("collect")();
 
 	atexit = {};
 	sys = {};

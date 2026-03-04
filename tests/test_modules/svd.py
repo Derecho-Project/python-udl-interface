@@ -18,7 +18,6 @@ def compute_svd_rank(A: list[np.ndarray]) -> list[int]:
         return int(np.sum(S > tol))  # rank
 
     ret = [svd_one(M) for M in A]
-    print("total: ", total)
     return ret
 
 

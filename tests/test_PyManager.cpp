@@ -85,7 +85,24 @@ TEST_CASE("Asynchronous invoke perfect forwarding", "[basic]") {
 	}
 }
 
-TEST_CASE("SVD no requests lost", "[basic]") {
+TEST_CASE("Multiple arguments", "[basic]") {
+	auto commit = [](int a, int b) -> pybind11::object { return pybind11::make_tuple(a, b); };
+	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
+
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler reflect = manager.loadPythonModule("tests.test_modules.add", "add");
+
+	std::vector<std::future<int>> futures;
+	for(size_t i = 0; i < 5; i++) {
+		futures.push_back(reflect.queue_invoke(commit, callback, 1, 2));
+	}
+
+	for(auto& future : futures) {
+		REQUIRE(future.get() == 3);
+	}
+}
+
+TEST_CASE("SVD no requests lost", "[batch]") {
 	/// (<16MB of ram)
 	const int MAT_DIM = 100;
 	const int N = 1000;
