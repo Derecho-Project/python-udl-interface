@@ -8,16 +8,17 @@ Optimized as an execution engine for Machine Learning pipelines.
 
 ## Table of Contents
 
-- [Features](#features)  
-- [Requirements](#requirements)  
-- [Installation](#installation)  
-<!-- - [Quick Start](#quick-start)  
-- [API Reference](#api-reference)  
-  - [PyManager](#pyschedulerpymanager)  
-  - [InvokeHandler](#pyschedulerpymanagerinvokehandler)  
-- [Examples](#examples)  
-- [Configuration](#configuration)  
-- [Contributing](#contributing)  
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Testing with AddressSanitizer](#testing-with-addresssanitizer)
+<!-- - [Quick Start](#quick-start)
+- [API Reference](#api-reference)
+  - [PyManager](#pyschedulerpymanager)
+  - [InvokeHandler](#pyschedulerpymanagerinvokehandler)
+- [Examples](#examples)
+- [Configuration](#configuration)
+- [Contributing](#contributing)
 - [License](#license)   -->
 
 ## Features
@@ -204,3 +205,25 @@ for (int i = 0; i < 1000; i++)
 for (auto& f : rank_futures)
     std::cout << f.get() << "\n";
 ```
+
+## Testing with AddressSanitizer
+
+Build the tests with ASan enabled:
+
+```bash
+./configure.sh --tests --asan --build
+```
+
+This adds `-fsanitize=address -fno-omit-frame-pointer -g` to the compile and link flags.
+
+### LSAN suppressions
+
+CPython's embedded interpreter and extension modules (e.g. numpy) intentionally leak interned strings, type caches, and method tables at shutdown. These are not bugs in pyscheduler but will be reported by LeakSanitizer. A suppressions file (`lsan_supressions.txt`) in the project root filters them out.
+
+The build system automatically symlinks this file into the test binary directory. To use it:
+
+```bash
+LSAN_OPTIONS=suppressions=lsan_suppressions.txt PYTHONMALLOC=malloc ./build/debug/tests/pyscheduler_tests
+```
+
+`PYTHONMALLOC=malloc` is required so that Python's allocations go through the system malloc, which ASan can track. Without it, CPython uses its own arena allocator and ASan cannot see individual allocations.

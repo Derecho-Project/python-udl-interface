@@ -1,0 +1,4 @@
+leak:PyUnicode_New
+leak:PyObject_Malloc
+leak:PyFloat_FromDouble
+leak:PyArrayMethod_FromSpec_int
