@@ -17,14 +17,24 @@ def dense_matmul_from_dlpack_batch(items):
     if not pairs:
         return []
 
-    a_tensors = [torch.utils.dlpack.from_dlpack(a_capsule) for a_capsule, _ in pairs]
-    b_tensors = [torch.utils.dlpack.from_dlpack(b_capsule) for _, b_capsule in pairs]
+    outputs = [None] * len(pairs)
+    groups = {}
 
-    # Execute one batched matmul on GPU: [N, M, K] x [N, K, P] -> [N, M, P].
-    a_batch = torch.stack(a_tensors, dim=0)
-    b_batch = torch.stack(b_tensors, dim=0)
-    c_batch = torch.matmul(a_batch, b_batch)
-    return c_batch.detach().cpu().tolist()
+    for i, (a_capsule, b_capsule) in enumerate(pairs):
+        a = torch.utils.dlpack.from_dlpack(a_capsule)
+        b = torch.utils.dlpack.from_dlpack(b_capsule)
+        key = (tuple(a.shape), tuple(b.shape), a.dtype, b.dtype, a.device)
+        groups.setdefault(key, []).append((i, a, b))
+
+    for bucket in groups.values():
+        a_batch = torch.stack([a for _, a, _ in bucket], dim=0)
+        b_batch = torch.stack([b for _, _, b in bucket], dim=0)
+        c_batch = torch.matmul(a_batch, b_batch)
+        batch_out = c_batch.detach().cpu().tolist()
+        for (idx, _, _), out in zip(bucket, batch_out):
+            outputs[idx] = out
+
+    return outputs
 
 
 def dense_matmul_from_dlpack_batch_sum(items):
@@ -32,12 +42,21 @@ def dense_matmul_from_dlpack_batch_sum(items):
     if not pairs:
         return []
 
-    a_tensors = [torch.utils.dlpack.from_dlpack(a_capsule) for a_capsule, _ in pairs]
-    b_tensors = [torch.utils.dlpack.from_dlpack(b_capsule) for _, b_capsule in pairs]
+    outputs = [None] * len(pairs)
+    groups = {}
 
-    # Batched GPU matmul, then reduce each output matrix on GPU to one scalar.
-    a_batch = torch.stack(a_tensors, dim=0)
-    b_batch = torch.stack(b_tensors, dim=0)
-    c_batch = torch.matmul(a_batch, b_batch)
-    per_item_sum = c_batch.sum(dim=(1, 2))
-    return per_item_sum.detach().cpu().tolist()
+    for i, (a_capsule, b_capsule) in enumerate(pairs):
+        a = torch.utils.dlpack.from_dlpack(a_capsule)
+        b = torch.utils.dlpack.from_dlpack(b_capsule)
+        key = (tuple(a.shape), tuple(b.shape), a.dtype, b.dtype, a.device)
+        groups.setdefault(key, []).append((i, a, b))
+
+    for bucket in groups.values():
+        a_batch = torch.stack([a for _, a, _ in bucket], dim=0)
+        b_batch = torch.stack([b for _, _, b in bucket], dim=0)
+        c_batch = torch.matmul(a_batch, b_batch)
+        per_item_sum = c_batch.sum(dim=(1, 2)).detach().cpu().tolist()
+        for (idx, _, _), out in zip(bucket, per_item_sum):
+            outputs[idx] = out
+
+    return outputs

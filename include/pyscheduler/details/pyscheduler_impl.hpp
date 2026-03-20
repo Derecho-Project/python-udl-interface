@@ -442,6 +442,64 @@ PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_n
 		id, object_it->second, std::make_unique<PyManager>(), batch_size, prefetch_depth);
 }
 
+void PyManager::add_path(const std::string& directory) {
+	if(directory.empty()) {
+		throw std::invalid_argument("Path cannot be empty");
+	}
+
+	if(!shared().interpreter_initialized) {
+		throw std::runtime_error("Python interpreter not initialized");
+	}
+
+	SharedState& state = shared();
+
+	pybind11::gil_scoped_acquire gil;
+
+	constexpr const char* kSysModule = "sys";
+	constexpr const char* kPathObjectKey = "__sys_path__";
+
+	auto module_it = state.py_invoke_handler_map.find(kSysModule);
+	if(module_it == state.py_invoke_handler_map.end()) {
+		pybind11::module_ mod;
+		try {
+			mod = pybind11::module_::import(kSysModule);
+		} catch(pybind11::error_already_set& e) {
+			throw std::runtime_error("Could not import module: sys");
+		}
+
+		auto [inserted_it, successful] =
+			state.py_invoke_handler_map.emplace(kSysModule, PyInvokeHandlerEntry{ mod, { } });
+		if(!successful) {
+			throw std::runtime_error("Could not cache module: sys");
+		}
+		module_it = inserted_it;
+	}
+
+	auto path_it = module_it->second.handler_map.find(kPathObjectKey);
+	if(path_it == module_it->second.handler_map.end()) {
+		pybind11::object path_obj;
+		try {
+			path_obj = module_it->second.module_.attr("path");
+		} catch(pybind11::error_already_set& e) {
+			throw std::runtime_error("Could not access sys.path");
+		}
+
+		auto path_ptr = std::make_shared<pybind11::object>(std::move(path_obj));
+		module_it->second.handler_map[kPathObjectKey] = path_ptr;
+		path_it = module_it->second.handler_map.find(kPathObjectKey);
+	}
+
+	pybind11::list sys_path = path_it->second->cast<pybind11::list>();
+
+	for(auto item : sys_path) {
+		if(pybind11::str(item).cast<std::string>() == directory) {
+			return;
+		}
+	}
+
+	sys_path.append(pybind11::str(directory));
+}
+
 void PyManager::mainLoop() {
 	if(shared().interpreter_initialized) {
 		throw std::runtime_error(
