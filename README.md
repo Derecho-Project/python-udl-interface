@@ -4,7 +4,7 @@
 
 A C++ library that embeds a single Python interpreter, providing thread‑pooled, asynchronous, and synchronous invocation of Python functions from C++ with optimized GIL usage.
 
-Optimized as an execution engine for Machine Learning pipelines. 
+Optimized as an execution engine for Machine Learning pipelines.  Note that the pyproject.toml is only useful if you want to build/run the examples yourself.
 
 ## Table of Contents
 

@@ -1,18 +1,18 @@
+#pragma once
+
 #include "pyscheduler/library_export.hpp"
 #include <cuda_runtime.h>
-#include <dlpack.h>
-#include <memory>
+#include <dlpack/dlpack.h>
 
-enum class DeviceType {
-	CPU,
-	CUDA,
-};
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <vector>
+
+namespace pyscheduler {
 
 template <typename T>
 struct DLPackTypeTraits;
-
-// I love explicit template specialization
-// NOTE: If you get a compile time, add an entry here:
 
 template <>
 struct DLPackTypeTraits<float> {
@@ -39,43 +39,49 @@ struct DLPackTypeTraits<uint8_t> {
 	static constexpr DLDataType dtype = { kDLUInt, 8, 1 };
 };
 
-template <DeviceType Device, typename DataType, size_t... Dims>
-std::unique_ptr<DLManagedTensor> createDlpackTensor() {
-	constexpr int ndim = sizeof...(Dims);
-	constexpr int64_t num_items = (... * Dims); // C++17 fold expression
-
-	// Allocate and set shape
-	int64_t* shape = new int64_t[ndim]{ Dims... };
-
-	// Allocate tensor memory
-	DataType* data;
-	if constexpr(Device == DeviceType::CPU) {
-		data = new T[num_items];
-	} else if constexpr(Device == DeviceType::CUDA) {
-		cudaMalloc(&data, num_items * sizeof(T));
+template <typename T>
+inline DLManagedTensor*
+createCudaMatrixDlpack(const std::vector<T>& host_data, int64_t rows, int64_t cols) {
+	if(host_data.size() != static_cast<size_t>(rows * cols)) {
+		throw std::invalid_argument("host_data size does not match rows*cols");
 	}
 
-	// Create DLManagedTensor
-	DLManagedTensor* managed_tensor = new DLManagedTensor();
-	managed_tensor->dl_tensor.data = data;
-	managed_tensor->dl_tensor.device = { Device == DeviceType::CPU ? kDLCPU : kDLCUDA, 0 };
-	managed_tensor->dl_tensor.ndim = ndim;
-	managed_tensor->dl_tensor.dtype = DLPackTypeTraits<DataType>::dtype;
+	auto* managed = new DLManagedTensor();
+	auto* shape = new int64_t[2]{ rows, cols };
 
-	managed_tensor->dl_tensor.shape = shape;
-	managed_tensor->dl_tensor.strides = nullptr;
-	managed_tensor->dl_tensor.byte_offset = 0;
-	managed_tensor->dl_tensor.shape = shape;
-	managed_tensor->manager_ctx = nullptr;
+	T* device_data = nullptr;
+	cudaError_t alloc_err =
+		cudaMalloc(reinterpret_cast<void**>(&device_data), host_data.size() * sizeof(T));
+	if(alloc_err != cudaSuccess) {
+		delete[] shape;
+		delete managed;
+		throw std::runtime_error("cudaMalloc failed");
+	}
 
-	tensor->deleter = [](DLManagedTensor* self) {
-		if(if constexpr Device == DeviceType::GPU)
-			cudaFree(self->dl_tensor.data);
-		else
-			delete[] static_cast<DataType*>(self->dl_tensor.data);
+	cudaError_t copy_err = cudaMemcpy(
+		device_data, host_data.data(), host_data.size() * sizeof(T), cudaMemcpyHostToDevice);
+	if(copy_err != cudaSuccess) {
+		cudaFree(device_data);
+		delete[] shape;
+		delete managed;
+		throw std::runtime_error("cudaMemcpy failed");
+	}
+
+	managed->dl_tensor.data = device_data;
+	managed->dl_tensor.device = DLDevice{ kDLCUDA, 0 };
+	managed->dl_tensor.ndim = 2;
+	managed->dl_tensor.dtype = DLPackTypeTraits<T>::dtype;
+	managed->dl_tensor.shape = shape;
+	managed->dl_tensor.strides = nullptr;
+	managed->dl_tensor.byte_offset = 0;
+	managed->manager_ctx = nullptr;
+	managed->deleter = [](DLManagedTensor* self) {
+		cudaFree(self->dl_tensor.data);
 		delete[] self->dl_tensor.shape;
 		delete self;
 	};
 
-	return std::unique_ptr<DLManagedTensor>(managed_tensor);
+	return managed;
 }
+
+} // namespace pyscheduler
