@@ -202,6 +202,10 @@ public:
 								   size_t batch_size = 1,
 								   size_t prefetch_depth = 1);
 
+	/// @brief Adds a directory to Python's module search path (sys.path).
+	/// @param directory Filesystem path to append if not already present.
+	void add_path(const std::string& directory);
+
 private:
 	struct PYSCHEDULER_LIBRARY_LOCAL PyInvokeHandlerEntry {
 		pybind11::module_ module_;

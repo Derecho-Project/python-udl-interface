@@ -28,6 +28,10 @@ using namespace pyscheduler;
 
 struct Context {
 	PyManager manager;
+
+	Context() {
+		manager.add_path(PYSCHEDULER_SOURCE_DIR);
+	}
 };
 
 Context& getContext() {
