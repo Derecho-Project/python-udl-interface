@@ -3,21 +3,19 @@
 #include "pyscheduler/move_only.hpp"
 
 #include <atomic>
-#include <blockingconcurrentqueue.h>
 #include <chrono>
-#include <filesystem>
+#include <condition_variable>
+#include <deque>
 #include <future>
-#include <iostream>
-#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
-#include <queue>
-#include <set>
-#include <shared_mutex>
 #include <string>
-
-using namespace std::chrono;
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace pyscheduler {
 ///////////////////////////////////////////////////////////////////////////////
@@ -49,6 +47,15 @@ public:
 		friend PyManager;
 
 	public:
+		using RequestId = uint64_t;
+
+		struct QueueEntry {
+			RequestId request_id = 0;
+			MoveOnlyFunction<pybind11::object()> commit;
+			MoveOnlyFunction<void(pybind11::object)> on_result;
+			MoveOnlyFunction<void(std::exception_ptr)> on_error;
+		};
+
 		/// @brief Synchronously invokes the Python function with given arguments.
 		///
 		///	This method acquires the GIL and calls the Python function, then casts the result into the
@@ -94,6 +101,23 @@ public:
 		auto queue_invoke(CommitFn&& commit, Callback&& callback, Args&&... args)
 			-> std::future<std::invoke_result_t<Callback, pybind11::object>>;
 
+		/// @brief Asynchronously enqueues a request under a caller-provided request id.
+		template <typename CommitFn, typename Callback, typename... Args>
+		auto queue_invoke_with_id(RequestId request_id,
+								  CommitFn&& commit,
+								  Callback&& callback,
+								  Args&&... args)
+			-> std::future<std::invoke_result_t<Callback, pybind11::object>>;
+
+		/// @brief Swaps two queued requests. Returns false if either is missing/committed.
+		bool swap_requests(RequestId request_a, RequestId request_b);
+
+		/// @brief Removes one queued request and returns the moved queue entry.
+		std::optional<QueueEntry> take_request(RequestId request_id);
+
+		/// @brief Removes queued requests and returns moved queue entries.
+		std::vector<QueueEntry> take_requests(const std::vector<RequestId>& request_ids);
+
 		~InvokeHandler();
 		InvokeHandler(InvokeHandler&& other) noexcept;
 		InvokeHandler& operator=(InvokeHandler&& other) noexcept;
@@ -101,29 +125,33 @@ public:
 		InvokeHandler& operator=(const InvokeHandler&) = delete;
 
 	private:
-		struct QueueEntry {
-			MoveOnlyFunction<pybind11::object()> commit;
-			MoveOnlyFunction<void(pybind11::object)> on_result;
-			MoveOnlyFunction<void(std::exception_ptr)> on_error;
-		};
-
 		struct CommittedEntry {
+			RequestId request_id = 0;
 			pybind11::object committed_obj;
 			MoveOnlyFunction<void(pybind11::object)> on_result;
 			MoveOnlyFunction<void(std::exception_ptr)> on_error;
 		};
 
 		struct WorkerState {
-			std::shared_ptr<pybind11::object> resource;
-			size_t batch_size;
-			size_t prefetch_depth;
-			moodycamel::BlockingConcurrentQueue<QueueEntry> queue;
-			std::atomic<bool> active{ true };
+			mutable std::mutex queue_mutex;
+			std::deque<QueueEntry> queued_entries;
+			std::unordered_set<RequestId> queued_request_ids;
 
-			WorkerState(std::shared_ptr<pybind11::object> res, size_t bs, size_t pd)
-				: resource(std::move(res))
-				, batch_size(bs)
-				, prefetch_depth(pd) { }
+			WorkerState() = default;
+
+			void enqueue(QueueEntry entry);
+
+			bool commit(QueueEntry& out);
+			size_t commit(size_t max_items, std::vector<QueueEntry>& out);
+
+			bool swap(RequestId request_a, RequestId request_b);
+
+			std::vector<QueueEntry> drop_count(size_t count);
+			std::optional<QueueEntry> drop_req(RequestId request_id);
+			std::vector<QueueEntry> drop_batch(const std::vector<RequestId>& request_ids);
+
+			size_t queued_size() const;
+			bool empty() const;
 		};
 
 		InvokeHandler(size_t id,
@@ -132,7 +160,11 @@ public:
 					  size_t batch_size,
 					  size_t prefetch_depth);
 
-		static void workerLoop(std::shared_ptr<WorkerState> state);
+		static void workerLoop(std::shared_ptr<WorkerState> state,
+							   std::shared_ptr<pybind11::object> resource,
+							   size_t batch_size,
+							   size_t prefetch_depth,
+							   std::atomic<bool>* active);
 
 		size_t _id;
 
@@ -140,6 +172,11 @@ public:
 		// until all InvokeHandlers go out of scope
 		std::unique_ptr<PyManager> _manager;
 
+		std::shared_ptr<pybind11::object> _resource;
+		size_t _batch_size = 1;
+		size_t _prefetch_depth = 1;
+		std::atomic<RequestId> _next_request_id{ 1 };
+		std::atomic<bool> _active{ true };
 		std::shared_ptr<WorkerState> _state;
 		std::thread _worker;
 	};
@@ -168,8 +205,8 @@ public:
 private:
 	struct PYSCHEDULER_LIBRARY_LOCAL PyInvokeHandlerEntry {
 		pybind11::module_ module_;
-		/// @brief maps a function name to its index in the PyManager's py_objects vector
-		std::unordered_map<std::string, size_t> handler_map;
+		/// @brief maps a function name to its cached callable object
+		std::unordered_map<std::string, std::shared_ptr<pybind11::object>> handler_map;
 	};
 
 	struct PYSCHEDULER_LIBRARY_LOCAL SharedState {
@@ -177,8 +214,6 @@ private:
 
 		/// @brief stores all loaded modules and objects
 		std::unordered_map<std::string, PyInvokeHandlerEntry> py_invoke_handler_map;
-
-		std::vector<std::shared_ptr<pybind11::object>> py_objects;
 
 		std::mutex destructor_mutex;
 		std::condition_variable destructor_cv;
