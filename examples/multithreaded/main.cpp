@@ -1,8 +1,8 @@
 #include <pyscheduler/pyscheduler.hpp>
 
 #include <chrono>
-#include <format>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -58,16 +58,18 @@ int main() {
 	auto ms = chrono::duration_cast<chrono::milliseconds>(end - start).count();
 
 	double expected_sequential = NUM_REQUESTS * 2 * SLEEP_SECONDS * 1000;
-	cout << format("Expected sequential: {:.0f} ms\n", expected_sequential);
-	cout << format("Actual:              {} ms\n", ms);
-	cout << format("Speedup:             {:.2f}x\n", expected_sequential / ms);
+	cout << "Expected sequential: " << fixed << setprecision(0) << expected_sequential
+		 << " ms\n";
+	cout << "Actual:              " << ms << " ms\n";
+	cout << "Speedup:             " << fixed << setprecision(2)
+		 << (expected_sequential / ms) << "x\n";
 
 	// Write results to file for diffing (outside timed region)
 	ofstream out("/tmp/multithreaded_cpp.txt");
 	for(size_t i = 0; i < results_a.size(); i++)
-		out << format("a[{}] = {:.10g}\n", i, results_a[i]);
+		out << "a[" << i << "] = " << setprecision(10) << results_a[i] << "\n";
 	for(size_t i = 0; i < results_b.size(); i++)
-		out << format("b[{}] = {:.10g}\n", i, results_b[i]);
+		out << "b[" << i << "] = " << setprecision(10) << results_b[i] << "\n";
 
 	cout << "Results written to /tmp/multithreaded_cpp.txt\n";
 

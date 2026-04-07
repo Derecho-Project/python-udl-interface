@@ -1,25 +1,35 @@
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS test_*.cpp)
 file(GLOB BENCH_SOURCES CONFIGURE_DEPENDS bench_*.cpp)
 
+list(REMOVE_ITEM TEST_SOURCES
+	"${CMAKE_CURRENT_SOURCE_DIR}/test_plugin_a.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/test_plugin_b.cpp"
+)
+
+add_library(pyscheduler_test_plugin_a SHARED test_plugin_a.cpp)
+target_link_libraries(pyscheduler_test_plugin_a PRIVATE pyscheduler::pyscheduler)
+
+add_library(pyscheduler_test_plugin_b SHARED test_plugin_b.cpp)
+target_link_libraries(pyscheduler_test_plugin_b PRIVATE pyscheduler::pyscheduler)
+
 if(TEST_SOURCES)
 	add_executable(pyscheduler_tests ${TEST_SOURCES})
 	target_compile_definitions(pyscheduler_tests PRIVATE
 		PYSCHEDULER_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+		PYSCHEDULER_TEST_PLUGIN_A_PATH="$<TARGET_FILE:pyscheduler_test_plugin_a>"
+		PYSCHEDULER_TEST_PLUGIN_B_PATH="$<TARGET_FILE:pyscheduler_test_plugin_b>"
 	)
 	find_package(BLAS REQUIRED)
 	target_link_libraries(pyscheduler_tests PRIVATE
 		pyscheduler::pyscheduler
 		Catch2::Catch2WithMain
 		BLAS::BLAS
+		dl
 	)
 
-	find_package(CUDAToolkit QUIET)
-	if(CUDAToolkit_FOUND)
-		target_link_libraries(pyscheduler_tests PRIVATE CUDA::cudart)
-		target_compile_definitions(pyscheduler_tests PRIVATE PYSCHEDULER_TEST_HAS_CUDA=1)
-	else()
-		target_compile_definitions(pyscheduler_tests PRIVATE PYSCHEDULER_TEST_HAS_CUDA=0)
-	endif()
+	find_package(CUDAToolkit REQUIRED)
+	target_link_libraries(pyscheduler_tests PRIVATE CUDA::cudart)
+	target_compile_definitions(pyscheduler_tests PRIVATE PYSCHEDULER_TEST_HAS_CUDA=1)
 
 	# Symlink LSAN suppressions file into test binary directory
 	set(_lsan_src "${CMAKE_SOURCE_DIR}/lsan_supressions.txt")
@@ -46,11 +56,7 @@ if(BENCH_SOURCES)
 		benchmark::benchmark_main
 	)
 
-	find_package(CUDAToolkit QUIET)
-	if(CUDAToolkit_FOUND)
-		target_link_libraries(pyscheduler_bench PRIVATE CUDA::cudart)
-		target_compile_definitions(pyscheduler_bench PRIVATE PYSCHEDULER_TEST_HAS_CUDA=1)
-	else()
-		target_compile_definitions(pyscheduler_bench PRIVATE PYSCHEDULER_TEST_HAS_CUDA=0)
-	endif()
+	find_package(CUDAToolkit REQUIRED)
+	target_link_libraries(pyscheduler_bench PRIVATE CUDA::cudart)
+	target_compile_definitions(pyscheduler_bench PRIVATE PYSCHEDULER_TEST_HAS_CUDA=1)
 endif()

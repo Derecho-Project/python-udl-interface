@@ -28,16 +28,20 @@ add_subdirectory(extern/concurrentqueue)
 find_package(pybind11 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
-add_library(${PROJECT_NAME} INTERFACE)
+add_library(${PROJECT_NAME} SHARED)
 add_library(${PROJECT_NAME}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
+target_sources(${PROJECT_NAME}
+    PRIVATE
+        src/pyscheduler_state.cpp
+)
 
-target_compile_features(${PROJECT_NAME} INTERFACE cxx_std_17)
-target_include_directories(${PROJECT_NAME} INTERFACE
+target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
+target_include_directories(${PROJECT_NAME} PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extern/dlpack/include>
     $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(${PROJECT_NAME} INTERFACE
+target_link_libraries(${PROJECT_NAME} PUBLIC
     pybind11::embed
     concurrentqueue
     Threads::Threads
@@ -51,13 +55,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         message(STATUS "Using ThreadSanitizer")
     endif()
 
-    target_compile_options(${PROJECT_NAME} INTERFACE
+    target_compile_options(${PROJECT_NAME} PUBLIC
         $<$<BOOL:${ENABLE_FP}>:-fno-omit-frame-pointer>
         $<$<AND:$<BOOL:${ENABLE_FP}>,$<CONFIG:Debug,RelWithDebInfo>>:-g>
         $<$<BOOL:${ENABLE_ASAN}>:-fsanitize=address;-fno-omit-frame-pointer>
         $<$<BOOL:${ENABLE_TSAN}>:-fsanitize=thread;-fno-omit-frame-pointer>
     )
-    target_link_options(${PROJECT_NAME} INTERFACE
+    target_link_options(${PROJECT_NAME} PUBLIC
         $<$<BOOL:${ENABLE_ASAN}>:-fsanitize=address>
         $<$<BOOL:${ENABLE_TSAN}>:-fsanitize=thread>
     )
@@ -100,17 +104,4 @@ write_basic_package_version_file(
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY AnyNewerVersion
     ARCH_INDEPENDENT
-)
-
-configure_package_config_file(
-    "${CMAKE_CURRENT_LIST_DIR}/cmake/Config.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
-    INSTALL_DESTINATION ${_pyscheduler_install_cmakedir}
-)
-
-install(
-    FILES
-        "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
-        "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
-    DESTINATION ${_pyscheduler_install_cmakedir}
 )

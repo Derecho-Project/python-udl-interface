@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <cstdint>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 #include <string>
@@ -164,7 +165,7 @@ public:
 							   std::shared_ptr<pybind11::object> resource,
 							   size_t batch_size,
 							   size_t prefetch_depth,
-							   std::atomic<bool>* active);
+							   std::shared_ptr<std::atomic<bool>> active);
 
 		size_t _id;
 
@@ -176,7 +177,7 @@ public:
 		size_t _batch_size = 1;
 		size_t _prefetch_depth = 1;
 		std::atomic<RequestId> _next_request_id{ 1 };
-		std::atomic<bool> _active{ true };
+		std::shared_ptr<std::atomic<bool>> _active;
 		std::shared_ptr<WorkerState> _state;
 		std::thread _worker;
 	};
@@ -205,6 +206,12 @@ public:
 	/// @brief Adds a directory to Python's module search path (sys.path).
 	/// @param directory Filesystem path to append if not already present.
 	void add_path(const std::string& directory);
+
+	/// @brief Test/debug helper: returns process-unique shared-state address token.
+	static uintptr_t debug_shared_state_address();
+
+	/// @brief Test/debug helper: returns current live PyManager reference count.
+	static uint64_t debug_arc_count();
 
 private:
 	struct PYSCHEDULER_LIBRARY_LOCAL PyInvokeHandlerEntry {

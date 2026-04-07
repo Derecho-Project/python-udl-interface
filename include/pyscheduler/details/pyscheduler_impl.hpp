@@ -5,6 +5,7 @@
 #include "pyscheduler/move_only.hpp"
 #include <chrono>
 #include <cstdlib>
+#include <iostream>
 #include <deque>
 #include <stdexcept>
 #include <string_view>
@@ -129,12 +130,15 @@ PyManager::InvokeHandler::InvokeHandler(size_t id,
 	, _resource(std::move(resource))
 	, _batch_size(batch_size)
 	, _prefetch_depth(prefetch_depth)
+	, _active(std::make_shared<std::atomic<bool>>(true))
 	, _state(std::make_shared<WorkerState>())
 	, _worker(
-		  &InvokeHandler::workerLoop, _state, _resource, _batch_size, _prefetch_depth, &_active) { }
+		  &InvokeHandler::workerLoop, _state, _resource, _batch_size, _prefetch_depth, _active) { }
 
 PyManager::InvokeHandler::~InvokeHandler() {
-	_active.store(false);
+	if(_active) {
+		_active->store(false);
+	}
 	if(_worker.joinable()) _worker.join();
 	if(_state) {
 		pybind11::gil_scoped_acquire gil;
@@ -143,14 +147,26 @@ PyManager::InvokeHandler::~InvokeHandler() {
 }
 
 PyManager::InvokeHandler::InvokeHandler(InvokeHandler&& other) noexcept
-	: _id(other._id)
-	, _manager(std::move(other._manager))
-	, _state(std::move(other._state))
-	, _worker(std::move(other._worker)) { }
+    : _id(other._id)
+    , _manager(std::move(other._manager))
+    , _resource(std::move(other._resource))
+    , _batch_size(other._batch_size)
+    , _prefetch_depth(other._prefetch_depth)
+    , _next_request_id(other._next_request_id.load())
+	, _active(std::move(other._active))
+    , _state(std::move(other._state))
+    , _worker(std::move(other._worker)) {
+		if(!_resource) {
+			std::cerr << "InvokeHandler has no bound Python callable." << std::endl;
+			std::abort();
+		}
+	}
 
 PyManager::InvokeHandler& PyManager::InvokeHandler::operator=(InvokeHandler&& other) noexcept {
 	if(this != &other) {
-		_active.store(false);
+		if(_active) {
+			_active->store(false);
+		}
 		if(_worker.joinable()) _worker.join();
 		if(_state) {
 			pybind11::gil_scoped_acquire gil;
@@ -163,7 +179,7 @@ PyManager::InvokeHandler& PyManager::InvokeHandler::operator=(InvokeHandler&& ot
 		_batch_size = other._batch_size;
 		_prefetch_depth = other._prefetch_depth;
 		_next_request_id.store(other._next_request_id.load());
-		_active.store(other._active.load());
+		_active = std::move(other._active);
 		_state = std::move(other._state);
 		_worker = std::move(other._worker);
 	}
@@ -275,7 +291,7 @@ void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state,
 										  std::shared_ptr<pybind11::object> resource,
 										  size_t batch_size,
 										  size_t prefetch_depth,
-										  std::atomic<bool>* active) {
+									  std::shared_ptr<std::atomic<bool>> active) {
 	std::deque<CommittedEntry> prefetch_buffer;
 
 	while(active->load() || !state->empty() || !prefetch_buffer.empty()) {
@@ -360,7 +376,7 @@ void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state,
 // Impl PyManager
 ///////////////////////////////////////////////////////////////////////////////
 
-PyManager::SharedState PyManager::_instance;
+// PyManager::SharedState PyManager::_instance;
 
 PyManager::PyManager() {
 	if(shared().arc.fetch_add(1) == 0) {
@@ -407,7 +423,8 @@ PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_n
 		try {
 			mod = pybind11::module_::import(module_name.c_str());
 		} catch(pybind11::error_already_set& e) {
-			throw std::invalid_argument("Could not import module: " + module_name);
+			throw std::invalid_argument("Could not import module '" + module_name +
+										"': " + std::string(e.what()));
 		}
 
 		auto [inserted_it, successful] =
@@ -426,7 +443,8 @@ PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_n
 			obj = module_it->second.module_.attr(entry_point.c_str());
 		} catch(pybind11::error_already_set& e) {
 			throw std::invalid_argument("Could not find the '" + entry_point +
-										"' method in module " + module_name);
+										"' method in module " + module_name +
+										": " + std::string(e.what()));
 		}
 
 		auto obj_ptr = std::make_shared<pybind11::object>(obj);
@@ -498,6 +516,14 @@ void PyManager::add_path(const std::string& directory) {
 	}
 
 	sys_path.append(pybind11::str(directory));
+}
+
+uintptr_t PyManager::debug_shared_state_address() {
+	return reinterpret_cast<uintptr_t>(&shared());
+}
+
+uint64_t PyManager::debug_arc_count() {
+	return shared().arc.load();
 }
 
 void PyManager::mainLoop() {

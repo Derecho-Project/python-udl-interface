@@ -6,6 +6,9 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <dlfcn.h>
+#include <string>
 #include <thread>
 
 #if defined(PYSCHEDULER_TEST_HAS_CUDA) && PYSCHEDULER_TEST_HAS_CUDA &&                             \
@@ -317,6 +320,62 @@ TEST_CASE("Partial batch drain on shutdown", "[batch]") {
 	for(int i = 0; i < 3; i++) {
 		REQUIRE(futures[i].get() == i + 100);
 	}
+}
+
+TEST_CASE("Two plugin DSOs share one PyManager global state", "[shared-state][plugin]") {
+	auto base_arc = PyManager::debug_arc_count();
+
+	auto load_plugin = [](const char* path) -> void* {
+		void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+		if(handle == nullptr) {
+			FAIL(std::string("dlopen failed for ") + path + ": " + dlerror());
+		}
+		return handle;
+	};
+
+	auto load_symbol = [](void* handle, const char* name) -> void* {
+		dlerror();
+		void* sym = dlsym(handle, name);
+		const char* err = dlerror();
+		if(err != nullptr) {
+			FAIL(std::string("dlsym failed for ") + name + ": " + err);
+		}
+		return sym;
+	};
+
+	void* plugin_a = load_plugin(PYSCHEDULER_TEST_PLUGIN_A_PATH);
+	void* plugin_b = load_plugin(PYSCHEDULER_TEST_PLUGIN_B_PATH);
+
+	auto start_a = reinterpret_cast<void (*)()>(load_symbol(plugin_a, "plugin_start"));
+	auto stop_a = reinterpret_cast<void (*)()>(load_symbol(plugin_a, "plugin_stop"));
+	auto arc_a = reinterpret_cast<uint64_t (*)()>(load_symbol(plugin_a, "plugin_arc_count"));
+	auto addr_a =
+		reinterpret_cast<uintptr_t (*)()>(load_symbol(plugin_a, "plugin_shared_state_address"));
+
+	auto start_b = reinterpret_cast<void (*)()>(load_symbol(plugin_b, "plugin_start"));
+	auto stop_b = reinterpret_cast<void (*)()>(load_symbol(plugin_b, "plugin_stop"));
+	auto arc_b = reinterpret_cast<uint64_t (*)()>(load_symbol(plugin_b, "plugin_arc_count"));
+	auto addr_b =
+		reinterpret_cast<uintptr_t (*)()>(load_symbol(plugin_b, "plugin_shared_state_address"));
+
+	REQUIRE(addr_a() == PyManager::debug_shared_state_address());
+	REQUIRE(addr_b() == PyManager::debug_shared_state_address());
+
+	start_a();
+	REQUIRE(arc_a() == base_arc + 1);
+
+	start_b();
+	REQUIRE(arc_a() == base_arc + 2);
+	REQUIRE(arc_b() == base_arc + 2);
+
+	stop_b();
+	REQUIRE(arc_a() == base_arc + 1);
+
+	stop_a();
+	REQUIRE(PyManager::debug_arc_count() == base_arc);
+
+	dlclose(plugin_b);
+	dlclose(plugin_a);
 }
 
 #if defined(PYSCHEDULER_TEST_HAS_CUDA) && PYSCHEDULER_TEST_HAS_CUDA &&                             \
