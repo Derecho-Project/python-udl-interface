@@ -429,10 +429,12 @@ PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_n
 
 		auto [inserted_it, successful] =
 			state.py_invoke_handler_map.emplace(module_name, PyInvokeHandlerEntry{ mod, { } });
-		module_it = inserted_it;
-
-		if(!successful) {
-			throw std::runtime_error("Could not insert module: " + module_name);
+		if(successful) {
+			module_it = inserted_it;
+		} else {
+			// Another caller cached this module first (e.g., re-entrant load during import).
+			// Reuse the shared cached entry rather than failing.
+			module_it = inserted_it;
 		}
 	}
 
@@ -448,7 +450,11 @@ PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_n
 		}
 
 		auto obj_ptr = std::make_shared<pybind11::object>(obj);
-		module_it->second.handler_map[entry_point] = obj_ptr;
+		auto [handler_it, handler_inserted] =
+			module_it->second.handler_map.emplace(entry_point, obj_ptr);
+		if(!handler_inserted) {
+			obj_ptr = handler_it->second;
+		}
 		size_t id = module_it->second.handler_map.size() - 1;
 
 		return PyManager::InvokeHandler(
@@ -487,10 +493,11 @@ void PyManager::add_path(const std::string& directory) {
 
 		auto [inserted_it, successful] =
 			state.py_invoke_handler_map.emplace(kSysModule, PyInvokeHandlerEntry{ mod, { } });
-		if(!successful) {
-			throw std::runtime_error("Could not cache module: sys");
+		if(successful) {
+			module_it = inserted_it;
+		} else {
+			module_it = inserted_it;
 		}
-		module_it = inserted_it;
 	}
 
 	auto path_it = module_it->second.handler_map.find(kPathObjectKey);
