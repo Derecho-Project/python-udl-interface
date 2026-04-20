@@ -1,8 +1,29 @@
 #include "pyscheduler/pyscheduler.hpp"
 #include "pyscheduler/tensor.hpp"
 #include <catch2/catch_all.hpp>
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
 #include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
+
+#include <cstdlib>
+
+namespace {
+// Bypass libtorch_python's static destructor chain, which crashes inside
+// `_PyThreadState_DeleteCurrent` when its embedded pybind11 acquires the GIL
+// at process exit. Catch2 has already written its summary by the time
+// `testRunEnded` fires, so terminating early is safe for tests.
+struct CleanExitListener : Catch::EventListenerBase {
+	using Catch::EventListenerBase::EventListenerBase;
+	void testRunEnded(Catch::TestRunStats const& stats) override {
+		std::_Exit(stats.totals.assertions.failed == 0
+				   && stats.totals.testCases.failed == 0
+					   ? 0
+					   : 1);
+	}
+};
+} // namespace
+CATCH_REGISTER_LISTENER(CleanExitListener)
 
 #include <chrono>
 #include <cmath>
@@ -93,95 +114,6 @@ TEST_CASE("Asynchronous invoke", "[basic]") {
 	for(auto& future : futures) {
 		REQUIRE(future.get() == 3.1415926535);
 	}
-}
-
-TEST_CASE("Swap only works for non-committed queued requests", "[queue-control]") {
-	auto commit = [](int val, double sleep_s) -> pybind11::object {
-		return pybind11::make_tuple(val, sleep_s);
-	};
-	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
-
-	PyManager& manager = getContext().manager;
-	PyManager::InvokeHandler handler =
-		manager.loadPythonModule("tests.test_modules.black_hole", "invoke", 1, 1);
-
-	const auto id1 = static_cast<PyManager::InvokeHandler::RequestId>(2001);
-	const auto id2 = static_cast<PyManager::InvokeHandler::RequestId>(2002);
-	const auto id3 = static_cast<PyManager::InvokeHandler::RequestId>(2003);
-	auto f1 = handler.queue_invoke_with_id(id1, commit, callback, 1, 0.4);
-	auto f2 = handler.queue_invoke_with_id(id2, commit, callback, 2, 0.4);
-	auto f3 = handler.queue_invoke_with_id(id3, commit, callback, 3, 0.4);
-
-	REQUIRE(handler.swap_requests(id2, id3));
-
-	REQUIRE(f1.get() == 1);
-	REQUIRE(f2.get() == 2);
-	REQUIRE(f3.get() == 3);
-}
-
-TEST_CASE("Take returns moved queue entries for non-committed requests", "[queue-control]") {
-	auto commit = [](int val, double sleep_s) -> pybind11::object {
-		return pybind11::make_tuple(val, sleep_s);
-	};
-	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
-
-	PyManager& manager = getContext().manager;
-	PyManager::InvokeHandler handler =
-		manager.loadPythonModule("tests.test_modules.black_hole", "invoke", 1, 1);
-
-	const auto id1 = static_cast<PyManager::InvokeHandler::RequestId>(3001);
-	const auto id2 = static_cast<PyManager::InvokeHandler::RequestId>(3002);
-	const auto id3 = static_cast<PyManager::InvokeHandler::RequestId>(3003);
-	auto f1 = handler.queue_invoke_with_id(id1, commit, callback, 11, 0.4);
-	auto f2 = handler.queue_invoke_with_id(id2, commit, callback, 22, 0.4);
-	auto f3 = handler.queue_invoke_with_id(id3, commit, callback, 33, 0.4);
-
-	auto taken_one = handler.take_request(id2);
-	REQUIRE(taken_one.has_value());
-	REQUIRE(taken_one->request_id == id2);
-	taken_one->on_error(std::make_exception_ptr(std::runtime_error("taken by test before commit")));
-
-	auto taken_many = handler.take_requests({ id3, id1 });
-	REQUIRE((taken_many.size() == 1 || taken_many.size() == 2));
-	for(auto& entry : taken_many) {
-		entry.on_error(std::make_exception_ptr(std::runtime_error("taken by test before commit")));
-	}
-
-	const bool id1_taken = std::any_of(
-		taken_many.begin(), taken_many.end(), [id1](const auto& e) { return e.request_id == id1; });
-	const bool id3_taken = std::any_of(
-		taken_many.begin(), taken_many.end(), [id3](const auto& e) { return e.request_id == id3; });
-
-	if(id1_taken) {
-		REQUIRE_THROWS(f1.get());
-	} else {
-		REQUIRE(f1.get() == 11);
-	}
-	REQUIRE_THROWS(f2.get());
-	if(id3_taken) {
-		REQUIRE_THROWS(f3.get());
-	} else {
-		REQUIRE(f3.get() == 33);
-	}
-}
-
-TEST_CASE("Duplicate request ids are rejected", "[queue-control]") {
-	auto commit = [](int val, double sleep_s) -> pybind11::object {
-		return pybind11::make_tuple(val, sleep_s);
-	};
-	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
-
-	PyManager& manager = getContext().manager;
-	PyManager::InvokeHandler handler =
-		manager.loadPythonModule("tests.test_modules.black_hole", "invoke", 1, 1);
-
-	const auto request_id = static_cast<PyManager::InvokeHandler::RequestId>(4001);
-	auto f1 = handler.queue_invoke_with_id(request_id, commit, callback, 123, 0.4);
-
-	REQUIRE_THROWS_AS(handler.queue_invoke_with_id(request_id, commit, callback, 456, 0.4),
-					  std::invalid_argument);
-
-	REQUIRE(f1.get() == 123);
 }
 
 TEST_CASE("Asynchronous invoke perfect forwarding", "[basic]") {
@@ -320,6 +252,211 @@ TEST_CASE("Partial batch drain on shutdown", "[batch]") {
 	for(int i = 0; i < 3; i++) {
 		REQUIRE(futures[i].get() == i + 100);
 	}
+}
+
+TEST_CASE("Void-returning callback yields std::future<void>", "[basic][void]") {
+	auto commit = [](int val) -> pybind11::object { return pybind11::cast(val); };
+
+	std::atomic<int> sum{ 0 };
+	auto callback = [&sum](const pybind11::object& obj) -> void {
+		sum.fetch_add(obj.cast<int>(), std::memory_order_relaxed);
+	};
+
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler reflect =
+		manager.loadPythonModule("tests.test_modules.identity", "invoke", 4, 1);
+
+	std::vector<std::future<void>> futures;
+	const int N = 20;
+	int expected = 0;
+	for(int i = 0; i < N; i++) {
+		expected += i;
+		futures.push_back(reflect.queue_invoke(commit, callback, i));
+	}
+
+	for(auto& f : futures) {
+		f.get(); // must not throw
+	}
+	REQUIRE(sum.load() == expected);
+}
+
+TEST_CASE("Void-returning callback propagates thrown exceptions", "[basic][void][error]") {
+	auto commit = [](int val) -> pybind11::object { return pybind11::cast(val); };
+	auto callback = [](const pybind11::object&) -> void {
+		throw std::runtime_error("callback failure");
+	};
+
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler reflect =
+		manager.loadPythonModule("tests.test_modules.identity", "invoke", 1, 1);
+
+	auto fut = reflect.queue_invoke(commit, callback, 1);
+	REQUIRE_THROWS_AS(fut.get(), std::runtime_error);
+}
+
+TEST_CASE("Commit function throwing propagates to future", "[error]") {
+	auto commit = [](int val) -> pybind11::object {
+		if(val < 0) throw std::runtime_error("commit failure");
+		return pybind11::cast(val);
+	};
+	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
+
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler reflect =
+		manager.loadPythonModule("tests.test_modules.identity", "invoke", 2, 1);
+
+	auto good = reflect.queue_invoke(commit, callback, 7);
+	auto bad = reflect.queue_invoke(commit, callback, -1);
+	auto good2 = reflect.queue_invoke(commit, callback, 9);
+
+	REQUIRE(good.get() == 7);
+	REQUIRE_THROWS_AS(bad.get(), std::runtime_error);
+	REQUIRE(good2.get() == 9);
+}
+
+TEST_CASE("Python exception fans out to all batch callbacks", "[error][batch]") {
+	auto commit = [](int val) -> pybind11::object { return pybind11::cast(val); };
+	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
+
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler raises =
+		manager.loadPythonModule("tests.test_modules.raises", "invoke", 4, 1);
+
+	std::vector<std::future<int>> futures;
+	for(int i = 0; i < 4; i++) {
+		futures.push_back(raises.queue_invoke(commit, callback, i));
+	}
+	for(auto& f : futures) {
+		REQUIRE_THROWS(f.get());
+	}
+}
+
+TEST_CASE("Synchronous invoke surfaces Python exceptions", "[basic][error]") {
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler raises =
+		manager.loadPythonModule("tests.test_modules.raises", "invoke");
+
+	// pybind11::error_already_set must be destroyed under the GIL; hold it
+	// across the catch site so the propagated exception unwinds safely.
+	pybind11::gil_scoped_acquire gil;
+	REQUIRE_THROWS(raises.invoke<int>(pybind11::list()));
+}
+
+TEST_CASE("get_queue_stats reports zero state, then accumulates", "[stats]") {
+	auto commit = [](int val) -> pybind11::object { return pybind11::cast(val); };
+	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
+
+	PyManager& manager = getContext().manager;
+	const size_t batch_size = 5;
+	const size_t prefetch_depth = 2;
+	PyManager::InvokeHandler reflect = manager.loadPythonModule(
+		"tests.test_modules.identity", "invoke", batch_size, prefetch_depth);
+
+	auto initial = reflect.get_queue_stats();
+	REQUIRE(initial.total_enqueued == 0);
+	REQUIRE(initial.commit_batch_size_ema == 0.0);
+	REQUIRE(initial.execute_batch_size_ema == 0.0);
+	REQUIRE(initial.commit_ns_per_batch_ema == 0.0);
+	REQUIRE(initial.execute_ns_per_batch_ema == 0.0);
+
+	const int N = 100;
+	std::vector<std::future<int>> futures;
+	for(int i = 0; i < N; i++) {
+		futures.push_back(reflect.queue_invoke(commit, callback, i));
+	}
+	for(auto& f : futures) f.get();
+
+	auto stats = reflect.get_queue_stats();
+	REQUIRE(stats.total_enqueued == N);
+	// After draining, queues are empty.
+	REQUIRE(stats.commit_queue_size == 0);
+	REQUIRE(stats.execute_queue_size == 0);
+	// Worker did real work, so EMAs are populated.
+	REQUIRE(stats.commit_batch_size_ema > 0.0);
+	REQUIRE(stats.execute_batch_size_ema > 0.0);
+	REQUIRE(stats.commit_ns_per_batch_ema > 0.0);
+	REQUIRE(stats.execute_ns_per_batch_ema > 0.0);
+	// Execute batches are bounded by configured batch_size.
+	REQUIRE(stats.execute_batch_size_ema <= static_cast<double>(batch_size));
+}
+
+TEST_CASE("add_path rejects empty and is idempotent", "[basic][add_path]") {
+	PyManager& manager = getContext().manager;
+	REQUIRE_THROWS_AS(manager.add_path(""), std::invalid_argument);
+
+	// Multiple calls with the same path should not duplicate the sys.path entry.
+	const std::string p = PYSCHEDULER_SOURCE_DIR;
+	manager.add_path(p);
+	manager.add_path(p);
+	manager.add_path(p);
+
+	pybind11::gil_scoped_acquire gil;
+	pybind11::module_ sys = pybind11::module_::import("sys");
+	pybind11::list sys_path = sys.attr("path");
+	int count = 0;
+	for(auto item : sys_path) {
+		if(pybind11::str(item).cast<std::string>() == p) count++;
+	}
+	REQUIRE(count == 1);
+}
+
+TEST_CASE("InvokeHandler move-construction preserves in-flight work", "[move]") {
+	auto commit = [](int val) -> pybind11::object { return pybind11::cast(val); };
+	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
+
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler src =
+		manager.loadPythonModule("tests.test_modules.identity", "invoke", 4, 1);
+
+	std::vector<std::future<int>> futures;
+	for(int i = 0; i < 25; i++) {
+		futures.push_back(src.queue_invoke(commit, callback, i));
+	}
+
+	PyManager::InvokeHandler moved(std::move(src));
+
+	for(int i = 25; i < 50; i++) {
+		futures.push_back(moved.queue_invoke(commit, callback, i));
+	}
+
+	for(int i = 0; i < 50; i++) {
+		REQUIRE(futures[i].get() == i);
+	}
+}
+
+TEST_CASE("Concurrent producers all complete and total_enqueued matches", "[concurrent]") {
+	auto commit = [](int val) -> pybind11::object { return pybind11::cast(val); };
+	auto callback = [](const pybind11::object& obj) { return obj.cast<int>(); };
+
+	PyManager& manager = getContext().manager;
+	PyManager::InvokeHandler reflect =
+		manager.loadPythonModule("tests.test_modules.identity", "invoke", 8, 2);
+
+	const int kThreads = 4;
+	const int kPerThread = 250;
+	std::vector<std::vector<std::future<int>>> per_thread(kThreads);
+	std::vector<std::thread> producers;
+
+	for(int t = 0; t < kThreads; t++) {
+		producers.emplace_back([&, t] {
+			for(int i = 0; i < kPerThread; i++) {
+				per_thread[t].push_back(
+					reflect.queue_invoke(commit, callback, t * kPerThread + i));
+			}
+		});
+	}
+	for(auto& th : producers) th.join();
+
+	int seen = 0;
+	for(int t = 0; t < kThreads; t++) {
+		for(int i = 0; i < kPerThread; i++) {
+			REQUIRE(per_thread[t][i].get() == t * kPerThread + i);
+			seen++;
+		}
+	}
+	REQUIRE(seen == kThreads * kPerThread);
+	REQUIRE(reflect.get_queue_stats().total_enqueued ==
+			static_cast<int64_t>(kThreads * kPerThread));
 }
 
 TEST_CASE("Two plugin DSOs share one PyManager global state", "[shared-state][plugin]") {

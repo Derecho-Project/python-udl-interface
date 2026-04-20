@@ -5,128 +5,24 @@
 #include "pyscheduler/move_only.hpp"
 #include <chrono>
 #include <cstdlib>
-#include <iostream>
 #include <deque>
+#include <iostream>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
 
 namespace pyscheduler {
 
-void PyManager::InvokeHandler::WorkerState::enqueue(QueueEntry entry) {
-	std::lock_guard<std::mutex> lock(queue_mutex);
-	if(queued_request_ids.find(entry.request_id) != queued_request_ids.end()) {
-		throw std::invalid_argument("Duplicate request_id already exists in queue.");
-	}
-	queued_request_ids.insert(entry.request_id);
-	queued_entries.push_back(std::move(entry));
-}
-
-bool PyManager::InvokeHandler::WorkerState::commit(QueueEntry& out) {
-	std::lock_guard<std::mutex> lock(queue_mutex);
-	if(queued_entries.empty()) return false;
-	out = std::move(queued_entries.front());
-	queued_request_ids.erase(out.request_id);
-	queued_entries.pop_front();
-	return true;
-}
-
-size_t PyManager::InvokeHandler::WorkerState::commit(size_t max_items,
-													 std::vector<QueueEntry>& out) {
-	if(max_items == 0) return 0;
-	std::lock_guard<std::mutex> lock(queue_mutex);
-	const size_t n = std::min(max_items, queued_entries.size());
-	out.reserve(out.size() + n);
-	for(size_t i = 0; i < n; i++) {
-		out.push_back(std::move(queued_entries.front()));
-		queued_request_ids.erase(out.back().request_id);
-		queued_entries.pop_front();
-	}
-	return n;
-}
-
-size_t PyManager::InvokeHandler::WorkerState::queued_size() const {
-	std::lock_guard<std::mutex> lock(queue_mutex);
-	return queued_entries.size();
-}
-
-bool PyManager::InvokeHandler::WorkerState::swap(RequestId request_a, RequestId request_b) {
-	if(request_a == request_b) return true;
-
-	std::lock_guard<std::mutex> lock(queue_mutex);
-	if(queued_request_ids.find(request_a) == queued_request_ids.end() ||
-	   queued_request_ids.find(request_b) == queued_request_ids.end()) {
-		return false;
-	}
-
-	auto it_a = queued_entries.end();
-	auto it_b = queued_entries.end();
-	for(auto it = queued_entries.begin(); it != queued_entries.end(); ++it) {
-		if(it->request_id == request_a) it_a = it;
-		if(it->request_id == request_b) it_b = it;
-		if(it_a != queued_entries.end() && it_b != queued_entries.end()) break;
-	}
-
-	if(it_a == queued_entries.end() || it_b == queued_entries.end()) return false;
-	std::iter_swap(it_a, it_b);
-	return true;
-}
-
-std::vector<PyManager::InvokeHandler::QueueEntry>
-PyManager::InvokeHandler::WorkerState::drop_count(size_t count) {
-	std::vector<QueueEntry> dropped;
-	std::lock_guard<std::mutex> lock(queue_mutex);
-	const size_t n = std::min(count, queued_entries.size());
-	dropped.reserve(n);
-	for(size_t i = 0; i < n; i++) {
-		dropped.push_back(std::move(queued_entries.front()));
-		queued_request_ids.erase(dropped.back().request_id);
-		queued_entries.pop_front();
-	}
-	return dropped;
-}
-
-std::optional<PyManager::InvokeHandler::QueueEntry>
-PyManager::InvokeHandler::WorkerState::drop_req(RequestId request_id) {
-	std::lock_guard<std::mutex> lock(queue_mutex);
-	for(auto it = queued_entries.begin(); it != queued_entries.end(); ++it) {
-		if(it->request_id == request_id) {
-			QueueEntry dropped = std::move(*it);
-			queued_entries.erase(it);
-			queued_request_ids.erase(request_id);
-			return dropped;
-		}
-	}
-	return std::nullopt;
-}
-
-std::vector<PyManager::InvokeHandler::QueueEntry>
-PyManager::InvokeHandler::WorkerState::drop_batch(const std::vector<RequestId>& request_ids) {
-	std::vector<QueueEntry> dropped;
-	dropped.reserve(request_ids.size());
-	for(RequestId request_id : request_ids) {
-		auto maybe = drop_req(request_id);
-		if(maybe.has_value()) dropped.push_back(std::move(*maybe));
-	}
-	return dropped;
-}
-
-bool PyManager::InvokeHandler::WorkerState::empty() const {
-	std::lock_guard<std::mutex> lock(queue_mutex);
-	return queued_entries.empty();
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // Impl InvokeHandler
 ///////////////////////////////////////////////////////////////////////////////
 
-PyManager::InvokeHandler::InvokeHandler(size_t id,
+PyManager::InvokeHandler::InvokeHandler(size_t /*id*/,
 										std::shared_ptr<pybind11::object> resource,
 										std::unique_ptr<PyManager> manager,
 										size_t batch_size,
 										size_t prefetch_depth)
-	: _id(id)
-	, _manager(std::move(manager))
+	: _manager(std::move(manager))
 	, _resource(std::move(resource))
 	, _batch_size(batch_size)
 	, _prefetch_depth(prefetch_depth)
@@ -147,20 +43,18 @@ PyManager::InvokeHandler::~InvokeHandler() {
 }
 
 PyManager::InvokeHandler::InvokeHandler(InvokeHandler&& other) noexcept
-    : _id(other._id)
-    , _manager(std::move(other._manager))
-    , _resource(std::move(other._resource))
-    , _batch_size(other._batch_size)
-    , _prefetch_depth(other._prefetch_depth)
-    , _next_request_id(other._next_request_id.load())
+	: _manager(std::move(other._manager))
+	, _resource(std::move(other._resource))
+	, _batch_size(other._batch_size)
+	, _prefetch_depth(other._prefetch_depth)
 	, _active(std::move(other._active))
-    , _state(std::move(other._state))
-    , _worker(std::move(other._worker)) {
-		if(!_resource) {
-			std::cerr << "InvokeHandler has no bound Python callable." << std::endl;
-			std::abort();
-		}
+	, _state(std::move(other._state))
+	, _worker(std::move(other._worker)) {
+	if(!_resource) {
+		std::cerr << "InvokeHandler has no bound Python callable." << std::endl;
+		std::abort();
 	}
+}
 
 PyManager::InvokeHandler& PyManager::InvokeHandler::operator=(InvokeHandler&& other) noexcept {
 	if(this != &other) {
@@ -173,12 +67,10 @@ PyManager::InvokeHandler& PyManager::InvokeHandler::operator=(InvokeHandler&& ot
 			_state.reset();
 		}
 
-		_id = other._id;
 		_manager = std::move(other._manager);
 		_resource = std::move(other._resource);
 		_batch_size = other._batch_size;
 		_prefetch_depth = other._prefetch_depth;
-		_next_request_id.store(other._next_request_id.load());
 		_active = std::move(other._active);
 		_state = std::move(other._state);
 		_worker = std::move(other._worker);
@@ -206,19 +98,6 @@ auto PyManager::InvokeHandler::queue_invoke(CommitFn&& commit_fn,
 											Callback&& callback,
 											Args&&... args)
 	-> std::future<std::invoke_result_t<Callback, pybind11::object>> {
-	RequestId request_id = _next_request_id.fetch_add(1);
-	return queue_invoke_with_id(request_id,
-								std::forward<CommitFn>(commit_fn),
-								std::forward<Callback>(callback),
-								std::forward<Args>(args)...);
-}
-
-template <typename CommitFn, typename Callback, typename... Args>
-auto PyManager::InvokeHandler::queue_invoke_with_id(RequestId request_id,
-													CommitFn&& commit_fn,
-													Callback&& callback,
-													Args&&... args)
-	-> std::future<std::invoke_result_t<Callback, pybind11::object>> {
 	using ReturnType = std::invoke_result_t<Callback, pybind11::object>;
 
 	static_assert(
@@ -244,8 +123,13 @@ auto PyManager::InvokeHandler::queue_invoke_with_id(RequestId request_id,
 	auto on_result = [cb = std::forward<Callback>(callback),
 					  promise](pybind11::object result) mutable {
 		try {
-			ReturnType value = std::invoke(cb, std::move(result));
-			promise->set_value(std::move(value));
+			if constexpr(std::is_void_v<ReturnType>) {
+				std::invoke(cb, std::move(result));
+				promise->set_value();
+			} else {
+				ReturnType value = std::invoke(cb, std::move(result));
+				promise->set_value(std::move(value));
+			}
 		} catch(...) {
 			promise->set_exception(std::current_exception());
 		}
@@ -254,50 +138,50 @@ auto PyManager::InvokeHandler::queue_invoke_with_id(RequestId request_id,
 	// Error path: propagates exception to the future
 	auto on_error = [promise](std::exception_ptr eptr) { promise->set_exception(eptr); };
 
-	_state->enqueue(
-		QueueEntry{ request_id, std::move(commit), std::move(on_result), std::move(on_error) });
+	_state->commit_queue.enqueue(
+		QueueEntry{ std::move(commit), std::move(on_result), std::move(on_error) });
+	_state->total_enqueued.fetch_add(1, std::memory_order_relaxed);
 
 	return future;
 }
 
-bool PyManager::InvokeHandler::swap_requests(RequestId request_a, RequestId request_b) {
-	return _state->swap(request_a, request_b);
-}
-
-std::optional<PyManager::InvokeHandler::QueueEntry>
-PyManager::InvokeHandler::take_request(RequestId request_id) {
-	return _state->drop_req(request_id);
-}
-
-std::vector<PyManager::InvokeHandler::QueueEntry>
-PyManager::InvokeHandler::take_requests(const std::vector<RequestId>& request_ids) {
-	std::vector<QueueEntry> taken_entries;
-	taken_entries.reserve(request_ids.size());
-
-	for(RequestId request_id : request_ids) {
-		auto taken = _state->drop_req(request_id);
-		if(!taken.has_value()) continue;
-		taken_entries.push_back(std::move(*taken));
+inline PyManager::InvokeHandler::QueueStats
+PyManager::InvokeHandler::get_queue_stats() const {
+	QueueStats stats;
+	stats.commit_queue_size = _state->commit_queue.size_approx();
+	stats.execute_queue_size = _state->execute_queue_size.load(std::memory_order_relaxed);
+	stats.total_enqueued = _state->total_enqueued.load(std::memory_order_relaxed);
+	{
+		std::lock_guard<std::mutex> lock(_state->stats_mutex);
+		stats.commit_batch_size_ema = _state->commit_batch_size_ema;
+		stats.execute_batch_size_ema = _state->execute_batch_size_ema;
+		stats.commit_ns_per_batch_ema = _state->commit_ns_per_batch_ema;
+		stats.execute_ns_per_batch_ema = _state->execute_ns_per_batch_ema;
 	}
-
-	return taken_entries;
+	return stats;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // InvokeHandler Worker Loop
 ///////////////////////////////////////////////////////////////////////////////
 
-void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state,
-										  std::shared_ptr<pybind11::object> resource,
-										  size_t batch_size,
-										  size_t prefetch_depth,
-									  std::shared_ptr<std::atomic<bool>> active) {
+inline void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state,
+												 std::shared_ptr<pybind11::object> resource,
+												 size_t batch_size,
+												 size_t prefetch_depth,
+												 std::shared_ptr<std::atomic<bool>> active) {
 	std::deque<CommittedEntry> prefetch_buffer;
+	const size_t buffer_capacity = batch_size * prefetch_depth;
+	constexpr double kEmaAlpha = 0.1;
 
-	while(active->load() || !state->empty() || !prefetch_buffer.empty()) {
+	auto blend = [](double ema, double sample, bool first) {
+		return first ? sample : kEmaAlpha * sample + (1.0 - kEmaAlpha) * ema;
+	};
+
+	while(active->load() || state->commit_queue.size_approx() > 0 || !prefetch_buffer.empty()) {
 
 		// Block-wait only when prefetch buffer is empty and queue is empty
-		if(prefetch_buffer.empty() && state->empty()) {
+		if(prefetch_buffer.empty() && state->commit_queue.size_approx() == 0) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 			continue;
 		}
@@ -306,24 +190,41 @@ void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state,
 			pybind11::gil_scoped_acquire gil;
 
 			// Phase 1: Refill prefetch buffer up to batch_size * prefetch_depth
-			while(prefetch_buffer.size() < batch_size * prefetch_depth) {
-				std::vector<QueueEntry> popped_entries;
-				size_t needed = batch_size * prefetch_depth - prefetch_buffer.size();
-				size_t popped = state->commit(needed, popped_entries);
-				if(popped == 0) break;
+			size_t commit_count = 0;
+			auto commit_start = std::chrono::steady_clock::now();
+			while(prefetch_buffer.size() < buffer_capacity) {
+				QueueEntry entry;
+				if(!state->commit_queue.try_dequeue(entry)) break;
 
-				for(auto& entry : popped_entries) {
+				try {
+					pybind11::object committed = entry.commit();
+					prefetch_buffer.push_back(CommittedEntry{ std::move(committed),
+														  std::move(entry.on_result),
+														  std::move(entry.on_error) });
+					commit_count++;
+				} catch(...) {
 					try {
-						pybind11::object committed = entry.commit();
-						prefetch_buffer.push_back(CommittedEntry{ entry.request_id,
-																  std::move(committed),
-																  std::move(entry.on_result),
-																  std::move(entry.on_error) });
-					} catch(...) {
 						entry.on_error(std::current_exception());
+					} catch(...) {
 					}
 				}
 			}
+			auto commit_end = std::chrono::steady_clock::now();
+
+			if(commit_count > 0) {
+				double commit_ns =
+					static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+											commit_end - commit_start)
+											.count());
+				std::lock_guard<std::mutex> lock(state->stats_mutex);
+				const bool first = !state->has_commit_sample;
+				state->commit_batch_size_ema = blend(
+					state->commit_batch_size_ema, static_cast<double>(commit_count), first);
+				state->commit_ns_per_batch_ema =
+					blend(state->commit_ns_per_batch_ema, commit_ns, first);
+				state->has_commit_sample = true;
+			}
+			state->execute_queue_size.store(prefetch_buffer.size(), std::memory_order_relaxed);
 
 			// Phase 2: Execute batch — consume up to batch_size items (opportunistic)
 			size_t batch_target = std::min(batch_size, prefetch_buffer.size());
@@ -341,7 +242,10 @@ void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state,
 					error_callbacks.push_back(std::move(prefetch_buffer.front().on_error));
 					prefetch_buffer.pop_front();
 				}
+				state->execute_queue_size.store(prefetch_buffer.size(),
+												std::memory_order_relaxed);
 
+				auto execute_start = std::chrono::steady_clock::now();
 				try {
 					pybind11::object results = (*resource)(batch);
 
@@ -361,6 +265,19 @@ void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state,
 						}
 					}
 				}
+				auto execute_end = std::chrono::steady_clock::now();
+
+				double execute_ns =
+					static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+											execute_end - execute_start)
+											.count());
+				std::lock_guard<std::mutex> lock(state->stats_mutex);
+				const bool first = !state->has_execute_sample;
+				state->execute_batch_size_ema = blend(
+					state->execute_batch_size_ema, static_cast<double>(batch_target), first);
+				state->execute_ns_per_batch_ema =
+					blend(state->execute_ns_per_batch_ema, execute_ns, first);
+				state->has_execute_sample = true;
 			}
 		} // GIL released
 	}
@@ -376,32 +293,32 @@ void PyManager::InvokeHandler::workerLoop(std::shared_ptr<WorkerState> state,
 // Impl PyManager
 ///////////////////////////////////////////////////////////////////////////////
 
-// PyManager::SharedState PyManager::_instance;
-
 PyManager::PyManager() {
-	if(shared().arc.fetch_add(1) == 0) {
-		shared().destructor_thread = std::thread(&PyManager::mainLoop, this);
-	}
-	// small cost paid to block until interpreter is initialized
-	while(!shared().interpreter_initialized)
-		continue;
+	shared().arc.fetch_add(1, std::memory_order_acq_rel);
+
+	// The Python interpreter is initialized exactly once per process and the
+	// owning thread is parked forever. This keeps a valid PyThreadState alive
+	// for the lifetime of the process so that static destructors in libraries
+	// such as libtorch_python (which decref Python objects at exit) can safely
+	// acquire the GIL.
+	std::call_once(shared().init_flag, [] {
+		std::thread([] { PyManager::mainLoop(); }).detach();
+		while(!shared().interpreter_initialized.load(std::memory_order_acquire))
+			continue;
+
+		// Release any cached pybind11 handles before static destructors run,
+		// so dec_ref happens with the GIL held.
+		std::atexit([] {
+			if(!shared().interpreter_initialized.load(std::memory_order_acquire)) return;
+			pybind11::gil_scoped_acquire gil;
+			shared().py_invoke_handler_map.clear();
+		});
+	});
 }
 
 PyManager::~PyManager() {
-	shared().arc--;
-	if(shared().arc == 0) {
-		shared().threads_active = false;
-
-		// main worker handles interpreter cleanup
-		// https://docs.python.org/3/c-api/init.html#c.Py_FinalizeEx
-		//   Py_FinalizeEx should be called in the same thread as Py_InitializeEx
-		{
-			std::lock_guard<std::mutex> lock(shared().destructor_mutex);
-			shared().threads_active = false;
-		}
-		shared().destructor_cv.notify_all();
-		shared().destructor_thread.join();
-	}
+	shared().arc.fetch_sub(1, std::memory_order_acq_rel);
+	// Interpreter is intentionally not finalized; see PyManager() for rationale.
 }
 
 PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_name,
@@ -429,13 +346,7 @@ PyManager::InvokeHandler PyManager::loadPythonModule(const std::string& module_n
 
 		auto [inserted_it, successful] =
 			state.py_invoke_handler_map.emplace(module_name, PyInvokeHandlerEntry{ mod, { } });
-		if(successful) {
-			module_it = inserted_it;
-		} else {
-			// Another caller cached this module first (e.g., re-entrant load during import).
-			// Reuse the shared cached entry rather than failing.
-			module_it = inserted_it;
-		}
+		module_it = inserted_it;
 	}
 
 	auto object_it = module_it->second.handler_map.find(entry_point);
@@ -493,11 +404,7 @@ void PyManager::add_path(const std::string& directory) {
 
 		auto [inserted_it, successful] =
 			state.py_invoke_handler_map.emplace(kSysModule, PyInvokeHandlerEntry{ mod, { } });
-		if(successful) {
-			module_it = inserted_it;
-		} else {
-			module_it = inserted_it;
-		}
+		module_it = inserted_it;
 	}
 
 	auto path_it = module_it->second.handler_map.find(kPathObjectKey);
@@ -534,42 +441,27 @@ uint64_t PyManager::debug_arc_count() {
 }
 
 void PyManager::mainLoop() {
-	if(shared().interpreter_initialized) {
-		throw std::runtime_error(
-			"Cannot reinitialize Python interpreter once it has been shut down.");
-	}
-
 	// Do not register python signal handlers
 	// https://docs.python.org/3/c-api/init.html#c.Py_InitializeEx
 	pybind11::initialize_interpreter(false);
 
 	pybind11::module_ sys = pybind11::module_::import("sys");
-	pybind11::module_ atexit = pybind11::module_::import("atexit");
+	(void)pybind11::module_::import("atexit");
 
 	pybind11::list(sys.attr("path")).append(".");
 
-	{
-		// Release GIL so InvokeHandler worker threads can acquire it
-		pybind11::gil_scoped_release gil;
+	// Release the GIL so InvokeHandler worker threads (and any other thread
+	// that calls into Python via pybind11::gil_scoped_acquire) can acquire it.
+	// The PyThreadState owned by this thread remains valid for the lifetime of
+	// the process; we never let this function return.
+	(void)PyEval_SaveThread();
 
-		shared().interpreter_initialized.store(true);
+	shared().interpreter_initialized.store(true, std::memory_order_release);
 
-		std::unique_lock<std::mutex> lock(shared().destructor_mutex);
-		shared().destructor_cv.wait(lock, [] { return !shared().threads_active; });
-	} // GIL reacquired
-
-	shared().py_invoke_handler_map.clear();
-	shared().interpreter_initialized.store(false);
-
-	atexit = { };
-	sys = { };
-
-	// In embedded multi-threaded use, Py_FinalizeEx can crash during GC traversal
-	// of extension-managed objects. Default to process-exit cleanup, and allow
-	// explicit opt-in finalization for controlled environments.
-	const char* finalize_env = std::getenv("PYSCHEDULER_FINALIZE_INTERPRETER");
-	if(finalize_env != nullptr && std::string_view(finalize_env) == "1") {
-		pybind11::finalize_interpreter();
-	}
+	// Park forever. The OS reaps this thread at process exit. Keeping it alive
+	// preserves a valid Python thread state for static destructors that decref
+	// Python objects (e.g. libtorch_python).
+	std::promise<void> never;
+	never.get_future().wait();
 }
 } // namespace pyscheduler
